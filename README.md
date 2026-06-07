@@ -16,9 +16,11 @@ A lightweight macOS PDF viewer with annotation tools and a built-in quiz checker
 
 1. Download **PDF.Reader.zip** from the [Releases](https://github.com/azx-code/Forms-PDF-Reader/releases) page
 2. Unzip it — you'll get **PDF Reader.app**
-3. **Right-click → Open** (do NOT double-click the first time)
+3. **Right-click → Open** the first time (see below) — after that you can double-click normally
 
-   macOS will show a warning because the app isn't signed with an Apple developer certificate. Click **Open** in the dialog to proceed. You only need to do this once.
+   ![Right-click Open](https://raw.githubusercontent.com/azx-code/Forms-PDF-Reader/main/right-click-open.png)
+
+   macOS shows a warning because the app isn't signed with an Apple developer certificate. Click **Open** in the dialog to proceed. You only need to do this once.
 
 4. Drag **PDF Reader.app** to your Applications folder if you want it there permanently
 
