@@ -24,10 +24,14 @@ A lightweight macOS PDF viewer with annotation tools and a built-in quiz checker
 
    > **If you see "damaged and can't be opened":**
    > 1. Click **Cancel** (not Move to Trash)
-   > 2. Open **System Settings → Privacy & Security**
-   > 3. Scroll down — you'll see **"PDF Reader was blocked"** with an **Open Anyway** button
-   > 4. Click **Open Anyway** and enter your Mac password if prompted
-   > 5. The app will open normally from now on
+   > 2. Open **Terminal** (search for it in Spotlight with ⌘Space)
+   > 3. Paste this command and hit Enter:
+   > ```bash
+   > xattr -cr ~/Downloads/"PDF Reader.app"
+   > ```
+   > 4. Double-click the app — it will open normally from now on
+   >
+   > *(This command just removes a quarantine flag macOS adds to downloaded files — it's safe)*
 
 4. Drag **PDF Reader.app** to your Applications folder if you want it there permanently
 
