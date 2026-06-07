@@ -35,6 +35,46 @@ A lightweight macOS PDF viewer with annotation tools and a built-in quiz checker
 
 4. Drag **PDF Reader.app** to your Applications folder if you want it there permanently
 
+## How to Use
+
+### Step 1 — Make sure your PDF is searchable (OCR)
+
+Annotation and highlighting only works on PDFs with selectable text. If your PDF is a scanned image (text isn't selectable when you try to highlight), you need to run it through OCR first.
+
+**Recommended free tool:** [PDF24 OCR](https://tools.pdf24.org/en/ocr-pdf)
+
+1. Go to [tools.pdf24.org/en/ocr-pdf](https://tools.pdf24.org/en/ocr-pdf)
+2. Upload your PDF
+3. Download the converted file
+4. Open that file in PDF Reader
+
+### Step 2 — Annotate
+
+- Press **S** to enter highlight mode, then click and drag to highlight text
+- In highlight mode, **right-click** any line to strikethrough it (useful for marking off answer choices)
+- Press **A** to go back to cursor mode, **D** for strikethrough mode
+- **⌘Z** to undo, **⌘⇧Z** to redo
+- **⌘S** to save your annotations back to the PDF
+
+### Step 3 — Quiz Checker
+
+The built-in quiz checker is designed for 50-question exams.
+
+1. Click the **checklist icon** (☑) in the toolbar to open it
+2. Paste your **answer key** (e.g. `ABCDABC...`) into the left box — must be exactly 50 letters
+3. If you've already done some questions, paste those answers in the **Already done** box so it starts at the right question
+4. Click **Start**
+5. Type each answer as you go — it auto-submits on each keypress and shows if you got it right
+6. Press **⌘U** to undo the last answer
+7. At the end you'll see your score and a list of missed questions
+8. Use **copy** to copy your results for a spreadsheet
+
+### Opening multiple PDFs
+
+- Press **⌘O** to open another PDF — it opens as a new tab
+- Press **Spacebar** or **F** to switch between them
+- Each PDF keeps its own page position, annotations, and quiz session independently
+
 ## Keyboard Shortcuts
 
 | Key | Action |
