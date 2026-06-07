@@ -22,6 +22,12 @@ A lightweight macOS PDF viewer with annotation tools and a built-in quiz checker
 
    macOS shows a warning because the app isn't signed with an Apple developer certificate. Click **Open** in the dialog to proceed. You only need to do this once.
 
+   > **If you see "damaged and can't be opened"** — this is a macOS Gatekeeper issue with browser-downloaded apps. Fix it by running this in Terminal, then double-click normally:
+   > ```bash
+   > xattr -cr ~/Downloads/"PDF Reader.app"
+   > ```
+   > (adjust the path if you moved the app elsewhere, e.g. `/Applications/PDF\ Reader.app`)
+
 4. Drag **PDF Reader.app** to your Applications folder if you want it there permanently
 
 ## Keyboard Shortcuts
