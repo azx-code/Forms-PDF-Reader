@@ -14,7 +14,7 @@ A lightweight macOS PDF viewer with annotation tools and a built-in quiz checker
 
 > **macOS only.** Requires macOS 12 or later.
 
-1. Download **PDF.Reader.zip** from the [Releases](../../releases) page
+1. Download **PDF.Reader.zip** from the [Releases](https://github.com/azx-code/Forms-PDF-Reader/releases) page
 2. Unzip it — you'll get **PDF Reader.app**
 3. **Right-click → Open** (do NOT double-click the first time)
 
@@ -44,8 +44,8 @@ A lightweight macOS PDF viewer with annotation tools and a built-in quiz checker
 Requires Xcode command-line tools.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pdf-reader.git
-cd pdf-reader
+git clone https://github.com/azx-code/Forms-PDF-Reader.git
+cd Forms-PDF-Reader
 bash build.sh
 ```
 
