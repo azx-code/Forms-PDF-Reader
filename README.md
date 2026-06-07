@@ -62,6 +62,11 @@ The built-in quiz checker is designed for 50-question exams.
 
 1. Click the **checklist icon** (☑) in the toolbar to open it
 2. Paste your **answer key** (e.g. `ABCDABC...`) into the left box — must be exactly 50 letters
+
+   > **Tip:** If your answer key is in a PDF or image, paste it into [ChatGPT](https://chat.openai.com) or [Claude](https://claude.ai) and ask:
+   > *"Give me just the answer key as a single string of letters, no spaces or numbers (e.g. ABCDABCD...)"*
+   > Then paste the output directly into the answer key box.
+
 3. If you've already done some questions, paste those answers in the **Already done** box so it starts at the right question
 4. Click **Start**
 5. Type each answer as you go — it auto-submits on each keypress and shows if you got it right
@@ -69,11 +74,13 @@ The built-in quiz checker is designed for 50-question exams.
 7. At the end you'll see your score and a list of missed questions
 8. Use **copy** to copy your results for a spreadsheet
 
-### Opening multiple PDFs
+### Pro tip — Questions on one tab, answers on another
 
-- Press **⌘O** to open another PDF — it opens as a new tab
-- Press **Spacebar** or **F** to switch between them
-- Each PDF keeps its own page position, annotations, and quiz session independently
+Open your question PDF in one tab and your answer key PDF in another. Press **Spacebar** or **F** to flip between them instantly while you work through the exam.
+
+- Press **⌘O** to open a second PDF as a new tab
+- **Spacebar** or **F** switches between tabs
+- Each tab keeps its own page position, annotations, and quiz session independently
 
 ## Keyboard Shortcuts
 
