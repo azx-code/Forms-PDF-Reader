@@ -167,20 +167,70 @@ class AnnotatingPDFView: PDFView {
     var onSelectionReleased: (() -> Void)?
     var onLeftClick: ((PDFPage, CGPoint) -> Void)?
     var onRightClick: ((PDFPage, CGPoint) -> Void)?
+    var onAnnotationMoved: ((PDFAnnotation, PDFPage, CGRect, CGRect) -> Void)?
     var suppressContextMenu = false
+    var cursorModeActive = false
 
     override func menu(for event: NSEvent) -> NSMenu? {
         suppressContextMenu ? nil : super.menu(for: event)
     }
 
     private var mouseDownLocation: CGPoint = .zero
+    private var dragAnnotation: PDFAnnotation?
+    private var dragPage: PDFPage?
+    private var dragOriginalBounds: CGRect = .zero
+    private var dragStartPagePt: CGPoint = .zero
+    private var isResizingAnnotation = false
+    private let resizeHandleRadius: CGFloat = 14
 
     override func mouseDown(with event: NSEvent) {
         mouseDownLocation = event.locationInWindow
+        if cursorModeActive, let (ann, page, pagePt) = freeTextAt(event.locationInWindow) {
+            dragAnnotation = ann
+            dragPage = page
+            dragOriginalBounds = ann.bounds
+            dragStartPagePt = pagePt
+            // Bottom-right corner (maxX, minY) in page coords → check in view coords
+            let viewClickPt = convert(event.locationInWindow, from: nil)
+            let cornerViewPt = convert(CGPoint(x: ann.bounds.maxX, y: ann.bounds.minY), from: page)
+            let cdx = viewClickPt.x - cornerViewPt.x
+            let cdy = viewClickPt.y - cornerViewPt.y
+            isResizingAnnotation = (cdx * cdx + cdy * cdy < resizeHandleRadius * resizeHandleRadius)
+            return
+        }
         super.mouseDown(with: event)
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        guard let ann = dragAnnotation, let page = dragPage else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let viewPt = convert(event.locationInWindow, from: nil)
+        let pagePt = convert(viewPt, to: page)
+        let dx = pagePt.x - dragStartPagePt.x
+        let dy = pagePt.y - dragStartPagePt.y
+        var nb = dragOriginalBounds
+        if isResizingAnnotation {
+            let w = max(40, dragOriginalBounds.width + dx)
+            let h = max(20, dragOriginalBounds.height - dy)
+            nb = CGRect(x: dragOriginalBounds.minX, y: dragOriginalBounds.maxY - h, width: w, height: h)
+        } else {
+            nb.origin.x += dx
+            nb.origin.y += dy
+        }
+        ann.bounds = nb
+    }
+
     override func mouseUp(with event: NSEvent) {
+        if let ann = dragAnnotation, let page = dragPage {
+            let finalBounds = ann.bounds
+            if finalBounds != dragOriginalBounds {
+                onAnnotationMoved?(ann, page, dragOriginalBounds, finalBounds)
+            }
+            dragAnnotation = nil; dragPage = nil; isResizingAnnotation = false
+            return
+        }
         super.mouseUp(with: event)
         let loc = event.locationInWindow
         let dx = loc.x - mouseDownLocation.x
@@ -198,6 +248,17 @@ class AnnotatingPDFView: PDFView {
         fireClick(at: event.locationInWindow, handler: \.onRightClick)
     }
 
+    private func freeTextAt(_ windowPoint: CGPoint) -> (PDFAnnotation, PDFPage, CGPoint)? {
+        let viewPt = convert(windowPoint, from: nil)
+        guard let page = self.page(for: viewPt, nearest: true) else { return nil }
+        let pagePt = convert(viewPt, to: page)
+        let hit = CGRect(x: pagePt.x - 4, y: pagePt.y - 4, width: 8, height: 8)
+        if let ann = page.annotations.first(where: { $0.type == "FreeText" && $0.bounds.intersects(hit) }) {
+            return (ann, page, pagePt)
+        }
+        return nil
+    }
+
     private func fireClick(at windowPoint: CGPoint, handler: KeyPath<AnnotatingPDFView, ((PDFPage, CGPoint) -> Void)?>) {
         let viewPoint = convert(windowPoint, from: nil)
         guard let page = self.page(for: viewPoint, nearest: true) else { return }
@@ -211,13 +272,17 @@ class AnnotatingPDFView: PDFView {
 private enum UndoEntry {
     case added([(PDFAnnotation, PDFPage)])
     case removed([(PDFAnnotation, PDFPage)])
+    case moved(PDFAnnotation, PDFPage, CGRect, CGRect)  // ann, page, oldBounds, newBounds
 }
 
 class PDFViewHost: ObservableObject {
     weak var pdfView: AnnotatingPDFView?
     @Published var currentScale: CGFloat = 1.0
     @Published var activeTool: AnnotationTool = .highlight {
-        didSet { pdfView?.suppressContextMenu = (activeTool == .highlight) }
+        didSet {
+            pdfView?.suppressContextMenu = (activeTool == .highlight)
+            pdfView?.cursorModeActive = (activeTool == .cursor)
+        }
     }
     @Published var highlightColor: Color = Color(red: 1.0, green: 1.0, blue: 0.0)
     @Published private(set) var canUndo = false
@@ -260,6 +325,7 @@ class PDFViewHost: ObservableObject {
     func attach(_ view: AnnotatingPDFView) {
         pdfView = view
         view.suppressContextMenu = (activeTool == .highlight)
+        view.cursorModeActive = (activeTool == .cursor)
         scaleObserver = view.observe(\.scaleFactor, options: [.new]) { [weak self] _, change in
             if let s = change.newValue {
                 DispatchQueue.main.async { self?.currentScale = s }
@@ -268,6 +334,9 @@ class PDFViewHost: ObservableObject {
         view.onSelectionReleased = { [weak self] in self?.handleSelectionReleased() }
         view.onLeftClick = { [weak self] page, pt in self?.handleLeftClick(page: page, pagePoint: pt) }
         view.onRightClick = { [weak self] page, pt in self?.handleRightClick(page: page, pagePoint: pt) }
+        view.onAnnotationMoved = { [weak self] ann, page, old, new in
+            self?.pushUndo(.moved(ann, page, old, new))
+        }
     }
 
     // Auto-apply current tool when the user finishes a drag-selection.
@@ -406,8 +475,9 @@ class PDFViewHost: ObservableObject {
     func undo() {
         guard let entry = undoHistory.popLast() else { return }
         switch entry {
-        case .added(let items):   items.forEach { $0.1.removeAnnotation($0.0) }
-        case .removed(let items): items.forEach { $0.1.addAnnotation($0.0) }
+        case .added(let items):         items.forEach { $0.1.removeAnnotation($0.0) }
+        case .removed(let items):       items.forEach { $0.1.addAnnotation($0.0) }
+        case .moved(let ann, _, let old, _): ann.bounds = old
         }
         redoHistory.append(entry)
         canUndo = !undoHistory.isEmpty
@@ -417,8 +487,9 @@ class PDFViewHost: ObservableObject {
     func redo() {
         guard let entry = redoHistory.popLast() else { return }
         switch entry {
-        case .added(let items):   items.forEach { $0.1.addAnnotation($0.0) }
-        case .removed(let items): items.forEach { $0.1.removeAnnotation($0.0) }
+        case .added(let items):         items.forEach { $0.1.addAnnotation($0.0) }
+        case .removed(let items):       items.forEach { $0.1.removeAnnotation($0.0) }
+        case .moved(let ann, _, _, let new): ann.bounds = new
         }
         undoHistory.append(entry)
         canUndo = true
@@ -941,8 +1012,8 @@ struct PDFReaderView: View {
                 let noMods = mods.isEmpty
                 let cmdOnly = mods == .command
 
-                // Spacebar switches tabs even when a text field is focused
-                if noMods, event.charactersIgnoringModifiers == " " {
+                // Spacebar switches tabs — but not when the find bar is open
+                if noMods, event.charactersIgnoringModifiers == " ", !showFind {
                     onSwitchTab(); return nil
                 }
                 // Escape closes find bar
