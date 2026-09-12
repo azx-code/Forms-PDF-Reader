@@ -1,86 +1,123 @@
-# PDF Reader
+# Forms PDF Reader
 
 A lightweight macOS PDF viewer with annotation tools and a built-in quiz checker.
 
 ## Features
 
 - **Highlight & Strikethrough** — select text to highlight; right-click to strikethrough a line
+- **Text boxes** — click to place resizable text annotations directly on the page
+- **Find** — ⌘F to search text across the whole PDF
 - **Undo / Redo** — full annotation history (⌘Z / ⌘⇧Z)
-- **Multi-document tabs** — open multiple PDFs and switch between them with **Spacebar** or **F**
-- **Quiz Checker** — built-in answer checker for 50-question exams, with live scoring, undo, and a missed-questions summary
+- **Multi-document tabs** — open multiple PDFs and switch with **Spacebar** or **F**
+- **Quiz Checker** — built-in answer checker for 50-question exams with live scoring and missed-question log
+- **Custom shortcuts** — remap every key shortcut from Settings (⌘,)
 - **Auto-save prompt** — asked to save on close if you have unsaved annotations
+
+---
 
 ## Installation
 
-> **macOS only.** Requires macOS 12 or later.
+> **macOS 12 or later only.**
 
-1. Download **PDF.Reader.zip** from the [Releases](https://github.com/azx-code/Forms-PDF-Reader/releases) page
-2. Unzip it — you'll get **PDF Reader.app**
-3. **Right-click → Open** the first time (see below) — after that you can double-click normally
+There are two ways to install. **Method 1 (Build from Source) is recommended** — it takes about 2 minutes and avoids the macOS security warning entirely.
+
+---
+
+### Method 1 — Build from Source ✅ Recommended
+
+This builds the app directly on your Mac so macOS fully trusts it. No security warnings.
+
+**Step 1 — Install Xcode Command Line Tools** (skip if you already have them)
+
+Open **Terminal** (search with ⌘Space → type "Terminal") and paste:
+
+```bash
+xcode-select --install
+```
+
+A dialog will pop up — click **Install** and wait for it to finish (~5 minutes).
+
+**Step 2 — Clone and build**
+
+```bash
+git clone https://github.com/azx-code/Forms-PDF-Reader.git
+cd Forms-PDF-Reader
+bash build.sh
+```
+
+The app will be built to the folder you cloned into (e.g. `~/Downloads/Forms PDF Reader.app`). Open it and you're done — no security prompts ever again.
+
+---
+
+### Method 2 — Download Pre-built App
+
+1. Go to the [Releases page](https://github.com/azx-code/Forms-PDF-Reader/releases) and download **Forms.PDF.Reader.zip**
+2. Unzip it — you'll get **Forms PDF Reader.app**
+3. **Right-click → Open** the first time (don't double-click)
 
    ![Right-click Open](https://raw.githubusercontent.com/azx-code/Forms-PDF-Reader/main/right-click-open.png)
 
-   macOS shows a warning because the app isn't signed with an Apple developer certificate. Click **Open** in the dialog to proceed. You only need to do this once.
+   Click **Open** in the dialog. You only need to do this once — after that you can double-click normally.
 
-   > **If you see "damaged and can't be opened":**
-   > 1. Click **Cancel** (not Move to Trash)
-   > 2. Open **Terminal** (search for it in Spotlight with ⌘Space)
-   > 3. Paste this command and hit Enter:
-   > ```bash
-   > xattr -cr ~/Downloads/"PDF Reader.app"
-   > ```
-   > 4. Double-click the app — it will open normally from now on
-   >
-   > *(This command just removes a quarantine flag macOS adds to downloaded files — it's safe)*
+**If you see "damaged and can't be opened":**
 
-4. Drag **PDF Reader.app** to your Applications folder if you want it there permanently
+1. Click **Cancel** (not Move to Trash)
+2. Open **Terminal** and paste this, then press Enter:
+
+```bash
+xattr -cr ~/Downloads/"Forms PDF Reader.app"
+```
+
+3. Double-click the app — it will open normally from now on
+
+> *This removes a quarantine flag macOS adds to downloaded files. It's safe.*
+
+---
 
 ## How to Use
 
-### Step 1 — Make sure your PDF is searchable (OCR)
+### Step 1 — Make sure your PDF has selectable text (OCR)
 
-Annotation and highlighting only works on PDFs with selectable text. If your PDF is a scanned image (text isn't selectable when you try to highlight), you need to run it through OCR first.
+Highlighting only works on PDFs where you can click and drag to select text. If your PDF is a scanned image, run it through OCR first.
 
-**Recommended free tool:** [PDF24 OCR](https://tools.pdf24.org/en/ocr-pdf)
-
-1. Go to [tools.pdf24.org/en/ocr-pdf](https://tools.pdf24.org/en/ocr-pdf)
-2. Upload your PDF
-3. Download the converted file
-4. Open that file in PDF Reader
+**Free tool:** [PDF24 OCR](https://tools.pdf24.org/en/ocr-pdf) — upload your PDF, download the converted file, open it here.
 
 ### Step 2 — Annotate
 
-- Press **S** to enter highlight mode, then click and drag to highlight text
-- In highlight mode, **right-click** any line to strikethrough it (useful for marking off answer choices)
-- Press **A** to go back to cursor mode, **D** for strikethrough mode
-- **⌘Z** to undo, **⌘⇧Z** to redo
-- **⌘S** to save your annotations back to the PDF
+| Action | How |
+|--------|-----|
+| Highlight text | Press **S**, then drag over text |
+| Strikethrough a line | Press **S**, then **right-click** any line |
+| Cursor mode (remove annotations) | Press **A**, then click an annotation |
+| Text box | Click the **T** button, then click anywhere on the page |
+| Undo / Redo | ⌘Z / ⌘⇧Z |
+| Save | ⌘S |
 
 ### Step 3 — Quiz Checker
 
-The built-in quiz checker is designed for 50-question exams.
+Designed for 50-question multiple choice exams.
 
-1. Click the **checklist icon** (☑) in the toolbar to open it
-2. Paste your **answer key** (e.g. `ABCDABC...`) into the left box — must be exactly 50 letters
+1. Click the **☑ checklist icon** in the toolbar to open it
+2. Paste your **answer key** (e.g. `ABCDABCD…`) — must be exactly 50 letters
 
-   > **Tip:** If your answer key is in a PDF or image, paste it into [ChatGPT](https://chat.openai.com) or [Claude](https://claude.ai) and ask:
-   > *"Give me just the answer key as a single string of letters, no spaces or numbers (e.g. ABCDABCD...)"*
-   > Then paste the output directly into the answer key box.
+   > **Tip:** Paste your answer key into [ChatGPT](https://chat.openai.com) or [Claude](https://claude.ai) and ask:
+   > *"Give me just the answer key as a single string of letters with no spaces or numbers"*
+   > Then paste the result directly.
 
-3. If you've already done some questions, paste those answers in the **Already done** box so it starts at the right question
-4. Click **Start**
-5. Type each answer as you go — it auto-submits on each keypress and shows if you got it right
-6. Press **⌘U** to undo the last answer
-7. At the end you'll see your score and a list of missed questions
-8. Use **copy** to copy your results for a spreadsheet
+3. If you've already answered some questions, paste those in the **Already done** box
+4. Click **Start** — type each answer as you go, it auto-checks on every keystroke
+5. Press **⌘U** to undo the last answer
+6. At the end, see your score and a list of missed questions
 
-### Pro tip — Questions on one tab, answers on another
+### Pro Tip — Questions on one tab, answers on another
 
-Open your question PDF in one tab and your answer key PDF in another. Press **Spacebar** or **F** to flip between them instantly while you work through the exam.
+Open your question PDF in one tab and your answer key PDF in another. Press **Spacebar** to flip between them while you work.
 
-- Press **⌘O** to open a second PDF as a new tab
-- **Spacebar** or **F** switches between tabs
-- Each tab keeps its own page position, annotations, and quiz session independently
+- **⌘O** — open a second PDF as a new tab
+- **Spacebar** or **F** — switch between tabs
+- Each tab keeps its own page position, annotations, and quiz session
+
+---
 
 ## Keyboard Shortcuts
 
@@ -90,16 +127,21 @@ Open your question PDF in one tab and your answer key PDF in another. Press **Sp
 | `S` | Highlight mode |
 | `D` | Strikethrough mode |
 | `F` / `Space` | Switch between open PDFs |
+| `⌘F` | Find text in PDF |
 | `⌘Z` | Undo annotation |
 | `⌘⇧Z` | Redo annotation |
 | `⌘S` | Save |
 | `⌘O` | Open PDF |
+| `⌘W` | Close current tab |
 | `⌘U` | Undo quiz answer |
+| `⌘,` | Settings (remap shortcuts) |
 | `←` / `→` | Previous / next page |
+
+---
 
 ## Building from Source
 
-Requires Xcode command-line tools (`xcode-select --install` if you haven't already).
+Requires macOS 12+ and Xcode Command Line Tools.
 
 ```bash
 git clone https://github.com/azx-code/Forms-PDF-Reader.git
@@ -107,6 +149,6 @@ cd Forms-PDF-Reader
 bash build.sh
 ```
 
-The app is built into the **parent** of the cloned folder — so if you cloned to `~/Downloads/Forms-PDF-Reader/`, the app appears at `~/Downloads/Forms PDF Reader.app`.
+The app is built one folder up from wherever you cloned (e.g. if you cloned to `~/Downloads/Forms-PDF-Reader/`, the app appears at `~/Downloads/Forms PDF Reader.app`).
 
-**Optional — custom app icon:** Drop any 1024×1024 PNG named `icon.png` into the `Forms-PDF-Reader` folder before running `build.sh`. The script picks it up automatically. Without it the build still succeeds and macOS uses a default icon.
+**Custom icon:** Drop any 1024×1024 PNG named `icon.png` into the repo folder before running `build.sh`. Without it, the build still works and uses the included icon automatically.
