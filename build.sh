@@ -19,7 +19,6 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 
 echo "==> Compiling Swift source..."
 swiftc -parse-as-library \
-    -O \
     "${SCRIPT_DIR}/PDFReader.swift" \
     -o "${APP_DIR}/Contents/MacOS/${BINARY_NAME}" \
     -framework SwiftUI \
