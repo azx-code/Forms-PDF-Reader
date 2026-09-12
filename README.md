@@ -99,7 +99,7 @@ Open your question PDF in one tab and your answer key PDF in another. Press **Sp
 
 ## Building from Source
 
-Requires Xcode command-line tools.
+Requires Xcode command-line tools (`xcode-select --install` if you haven't already).
 
 ```bash
 git clone https://github.com/azx-code/Forms-PDF-Reader.git
@@ -107,4 +107,6 @@ cd Forms-PDF-Reader
 bash build.sh
 ```
 
-The app will be built to your Desktop/Projects folder.
+The app is built into the **parent** of the cloned folder — so if you cloned to `~/Downloads/Forms-PDF-Reader/`, the app appears at `~/Downloads/Forms PDF Reader.app`.
+
+**Optional — custom app icon:** Drop any 1024×1024 PNG named `icon.png` into the `Forms-PDF-Reader` folder before running `build.sh`. The script picks it up automatically. Without it the build still succeeds and macOS uses a default icon.

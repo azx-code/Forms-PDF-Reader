@@ -2,6 +2,29 @@ import SwiftUI
 import PDFKit
 import UniformTypeIdentifiers
 
+// MARK: - Shortcut Store
+
+class ShortcutStore: ObservableObject {
+    static let shared = ShortcutStore()
+    private let ud = UserDefaults.standard
+
+    @Published var cursor: String        { didSet { ud.set(cursor,        forKey: "sc_cursor") } }
+    @Published var highlight: String     { didSet { ud.set(highlight,     forKey: "sc_highlight") } }
+    @Published var strikethrough: String { didSet { ud.set(strikethrough, forKey: "sc_strikethrough") } }
+    @Published var textBox: String       { didSet { ud.set(textBox,       forKey: "sc_textBox") } }
+    @Published var switchTab: String     { didSet { ud.set(switchTab,     forKey: "sc_switchTab") } }
+    @Published var openQuiz: String      { didSet { ud.set(openQuiz,      forKey: "sc_quiz") } }
+
+    init() {
+        cursor        = ud.string(forKey: "sc_cursor")        ?? "a"
+        highlight     = ud.string(forKey: "sc_highlight")     ?? "s"
+        strikethrough = ud.string(forKey: "sc_strikethrough") ?? "d"
+        textBox       = ud.string(forKey: "sc_textBox")       ?? ""
+        switchTab     = ud.string(forKey: "sc_switchTab")     ?? "f"
+        openQuiz      = ud.string(forKey: "sc_quiz")          ?? ""
+    }
+}
+
 // MARK: - App
 
 @main
@@ -16,6 +39,14 @@ struct PDFReaderApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(before: .windowArrangement) {
+                Button("Close Tab") { appDelegate.closeCurrentTabAction?() }
+                    .keyboardShortcut("w", modifiers: .command)
+            }
+        }
+
+        Settings {
+            SettingsView()
         }
     }
 }
@@ -23,8 +54,8 @@ struct PDFReaderApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var hasUnsavedChanges: (() -> Bool)?
     var performSave: (() -> Void)?
-    // All open doc hosts — checked on quit so every unsaved doc is caught
     var allHosts: (() -> [PDFViewHost]) = { [] }
+    var closeCurrentTabAction: (() -> Void)?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let dirty = allHosts().filter { $0.hasUnsavedChanges }
@@ -192,6 +223,12 @@ class PDFViewHost: ObservableObject {
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
     @Published private(set) var hasUnsavedChanges = false
+    @Published var textBoxMode = false
+    @Published var textBoxFontSize: CGFloat = 16
+    @Published var textBoxFontColor: Color = .black
+    @Published var findResults: [PDFSelection] = []
+    @Published var findIndex: Int = -1
+    @Published var isFinding = false
     private var undoHistory: [UndoEntry] = []
     private var redoHistory: [UndoEntry] = []
     private var scaleObserver: NSKeyValueObservation?
@@ -235,6 +272,7 @@ class PDFViewHost: ObservableObject {
 
     // Auto-apply current tool when the user finishes a drag-selection.
     private func handleSelectionReleased() {
+        if textBoxMode { return }
         switch activeTool {
         case .cursor: break
         case .highlight:
@@ -244,13 +282,102 @@ class PDFViewHost: ObservableObject {
         }
     }
 
-    // Left-click: remove any annotation directly under the cursor.
+    // Left-click: remove annotation under cursor, or place text box.
     private func handleLeftClick(page: PDFPage, pagePoint: CGPoint) {
+        if textBoxMode {
+            addTextBox(page: page, pagePoint: pagePoint)
+            return
+        }
         guard let hit = page.annotations.first(where: {
             ($0.type == "Highlight" || isStrikethrough($0)) && $0.bounds.contains(pagePoint)
         }) else { return }
         page.removeAnnotation(hit)
         pushUndo(.removed([(hit, page)]))
+    }
+
+    private func addTextBox(page: PDFPage, pagePoint: CGPoint) {
+        guard let pdfView = pdfView else { return }
+
+        // Convert page coordinates → view coordinates
+        let viewPt = pdfView.convert(pagePoint, from: page)
+        let editorW: CGFloat = 380
+        let editorH: CGFloat = 140
+
+        // Place editor: account for whether PDFView is flipped (y-down) or not (y-up)
+        let editorOriginY: CGFloat = pdfView.isFlipped
+            ? viewPt.y                    // y-down: origin is top-left
+            : viewPt.y - editorH          // y-up:   origin is bottom-left
+        let editorFrame = CGRect(x: viewPt.x, y: editorOriginY, width: editorW, height: editorH)
+
+        let font = NSFont.systemFont(ofSize: textBoxFontSize)
+        let color = NSColor(textBoxFontColor)
+
+        let editor = TextBoxEditor(frame: editorFrame, font: font, color: color)
+        editor.onCommit = { [weak self, weak pdfView] text in
+            guard let self = self, let pdfView = pdfView, !text.isEmpty else { return }
+            // Convert editor corners back to page coordinates
+            let topY    = pdfView.isFlipped ? editorFrame.minY : editorFrame.maxY
+            let bottomY = pdfView.isFlipped ? editorFrame.maxY : editorFrame.minY
+            let tlPage = pdfView.convert(CGPoint(x: editorFrame.minX, y: topY),    to: page)
+            let brPage = pdfView.convert(CGPoint(x: editorFrame.maxX, y: bottomY), to: page)
+            let annBounds = CGRect(
+                x: min(tlPage.x, brPage.x), y: min(tlPage.y, brPage.y),
+                width: abs(brPage.x - tlPage.x), height: abs(tlPage.y - brPage.y)
+            )
+            let ann = PDFAnnotation(bounds: annBounds, forType: .freeText, withProperties: nil)
+            ann.font      = font
+            ann.fontColor = color
+            ann.color     = .clear
+            ann.contents  = text
+            let border    = PDFBorder(); border.lineWidth = 0; ann.border = border
+            page.addAnnotation(ann)
+            self.pushUndo(.added([(ann, page)]))
+        }
+
+        pdfView.addSubview(editor)
+        editor.textView.window?.makeFirstResponder(editor.textView)
+    }
+
+    // MARK: – Find
+    func search(_ query: String) {
+        findResults = []
+        findIndex = -1
+        pdfView?.clearSelection()
+        guard !query.isEmpty, let doc = pdfView?.document else { return }
+        isFinding = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let results = doc.findString(query, withOptions: .caseInsensitive)
+            DispatchQueue.main.async {
+                self?.findResults = results
+                self?.isFinding = false
+                if !results.isEmpty {
+                    self?.findIndex = 0
+                    self?.pdfView?.setCurrentSelection(results[0], animate: true)
+                    self?.pdfView?.scrollSelectionToVisible(nil)
+                }
+            }
+        }
+    }
+
+    func findNext() {
+        guard !findResults.isEmpty else { return }
+        findIndex = (findIndex + 1) % findResults.count
+        pdfView?.setCurrentSelection(findResults[findIndex], animate: true)
+        pdfView?.scrollSelectionToVisible(nil)
+    }
+
+    func findPrev() {
+        guard !findResults.isEmpty else { return }
+        findIndex = (findIndex - 1 + findResults.count) % findResults.count
+        pdfView?.setCurrentSelection(findResults[findIndex], animate: true)
+        pdfView?.scrollSelectionToVisible(nil)
+    }
+
+    func clearFind() {
+        findResults = []
+        findIndex = -1
+        isFinding = false
+        pdfView?.clearSelection()
     }
 
     // Right-click in highlight mode: strikethrough the line under the cursor.
@@ -380,6 +507,69 @@ class PDFViewHost: ObservableObject {
     }
 }
 
+// MARK: - In-Page Text Box Editor
+
+private class TextBoxEditor: NSView {
+    let textView: NSTextView
+    var onCommit: ((String) -> Void)?
+    private var clickMonitor: Any?
+    private var keyMonitor: Any?
+
+    init(frame: NSRect, font: NSFont, color: NSColor) {
+        let tv = NSTextView(frame: NSRect(origin: .zero, size: frame.size))
+        tv.isEditable            = true
+        tv.isSelectable          = true
+        tv.isRichText            = false
+        tv.drawsBackground       = false
+        tv.font                  = font
+        tv.textColor             = color
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask      = [.width, .height]
+        tv.textContainerInset    = NSSize(width: 6, height: 6)
+        self.textView = tv
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        // Thin accent-colored dashed border shows while editing; gone after commit
+        layer?.borderWidth = 1.5
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor
+        layer?.cornerRadius = 3
+        addSubview(tv)
+
+        // Commit when user clicks anywhere outside the editor
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self = self else { return event }
+            let pt = self.convert(event.locationInWindow, from: nil)
+            if !self.bounds.contains(pt) { self.commit() }
+            return event
+        }
+        // Escape = cancel (discard)
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+            if event.keyCode == 53 { self.cancel(); return nil }
+            return event
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+
+    func commit() {
+        let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        cleanup(); onCommit?(text); removeFromSuperview()
+    }
+
+    func cancel() { cleanup(); removeFromSuperview() }
+
+    private func cleanup() {
+        if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
+        if let m = keyMonitor   { NSEvent.removeMonitor(m); keyMonitor   = nil }
+    }
+
+    deinit { cleanup() }
+}
+
 // MARK: - Root
 
 struct DocEntry: Identifiable {
@@ -418,19 +608,22 @@ struct ContentView: View {
                         get: { docs[activeIndex].currentPage },
                         set: { docs[activeIndex].currentPage = $0 }
                     ),
-                    onSwitchTab: switchTab
+                    onSwitchTab: switchTab,
+                    onCloseTab: closeCurrentTab
                 )
                 .id(docs[activeIndex].id)
             }
         }
         .onAppear {
-            if docs.isEmpty { openFile() }
+            if docs.isEmpty { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { openFile() } }
             appDelegate.allHosts = { docs.map { $0.host } }
+            appDelegate.closeCurrentTabAction = { closeCurrentTab() }
         }
         .onChange(of: docs.count) { _, _ in
             appDelegate.allHosts = { docs.map { $0.host } }
+            appDelegate.closeCurrentTabAction = { closeCurrentTab() }
         }
-        .navigationTitle(docs.isEmpty ? "PDF Reader" : docs[activeIndex].title)
+        .navigationTitle(docs.isEmpty ? "Forms PDF Reader" : docs[activeIndex].title)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button("Open…") { openFile() }
@@ -459,6 +652,28 @@ struct ContentView: View {
     func switchTab() {
         guard docs.count > 1 else { return }
         activeIndex = (activeIndex + 1) % docs.count
+    }
+
+    func closeCurrentTab() {
+        guard !docs.isEmpty else { return }
+        let currentHost = docs[activeIndex].host
+        let title = docs[activeIndex].title
+        if currentHost.hasUnsavedChanges {
+            let alert = NSAlert()
+            alert.messageText = "Save \"\(title)\" before closing?"
+            alert.informativeText = "Your annotations will be lost if you don't save."
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.alertStyle = .warning
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: currentHost.save()
+            case .alertSecondButtonReturn: break
+            default: return
+            }
+        }
+        docs.remove(at: activeIndex)
+        activeIndex = docs.isEmpty ? 0 : min(activeIndex, docs.count - 1)
     }
 }
 
@@ -546,19 +761,23 @@ struct PDFReaderView: View {
     @Binding var showQuiz: Bool
     @Binding var currentPage: Int
     let onSwitchTab: () -> Void
+    let onCloseTab: () -> Void
     @State private var totalPages: Int
     @State private var keyMonitor: Any?
     @State private var showColorPicker = false
     @State private var savedFeedback = false
+    @State private var showFind = false
+    @State private var findQuery = ""
     @EnvironmentObject var appDelegate: AppDelegate
 
-    init(document: PDFDocument, host: PDFViewHost, quizModel: QuizModel, showQuiz: Binding<Bool>, currentPage: Binding<Int>, onSwitchTab: @escaping () -> Void = {}) {
+    init(document: PDFDocument, host: PDFViewHost, quizModel: QuizModel, showQuiz: Binding<Bool>, currentPage: Binding<Int>, onSwitchTab: @escaping () -> Void = {}, onCloseTab: @escaping () -> Void = {}) {
         self.document = document
         self.host = host
         self.quizModel = quizModel
         self._showQuiz = showQuiz
         self._currentPage = currentPage
         self.onSwitchTab = onSwitchTab
+        self.onCloseTab = onCloseTab
         _totalPages = State(initialValue: document.pageCount)
     }
 
@@ -566,6 +785,16 @@ struct PDFReaderView: View {
         VStack(spacing: 0) {
             WindowCloseInterceptor(getAllHosts: appDelegate.allHosts).frame(width: 0, height: 0)
             PDFKitRepresentable(document: document, currentPage: $currentPage, host: host)
+                .overlay(alignment: .top) {
+                    if showFind {
+                        VStack(spacing: 0) {
+                            FindBar(host: host, query: $findQuery, isVisible: $showFind)
+                                .background(Color(NSColor.windowBackgroundColor))
+                            Divider()
+                        }
+                        .shadow(color: .black.opacity(0.08), radius: 3, x: 0, y: 2)
+                    }
+                }
 
             Divider()
 
@@ -587,6 +816,41 @@ struct PDFReaderView: View {
                 toolButton(.cursor)
                 toolButton(.highlight)
                 toolButton(.strikethrough)
+
+                // Text box button
+                Button {
+                    host.textBoxMode.toggle()
+                } label: {
+                    Image(systemName: "text.cursor")
+                }
+                .buttonStyle(.bordered)
+                .foregroundStyle(host.textBoxMode ? Color.accentColor : Color.primary)
+                .background(
+                    host.textBoxMode ? Color.accentColor.opacity(0.15) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .help("Text Box")
+
+                // Font controls — only visible while text box mode is on
+                if host.textBoxMode {
+                    Divider().frame(height: 20)
+
+                    HStack(spacing: 3) {
+                        Text("Size").font(.system(size: 11)).foregroundStyle(.secondary)
+                        TextField("", value: $host.textBoxFontSize, formatter: {
+                            let f = NumberFormatter()
+                            f.minimum = 6; f.maximum = 144
+                            return f
+                        }())
+                        .frame(width: 36)
+                        .multilineTextAlignment(.center)
+                        .font(.system(size: 12))
+                    }
+
+                    ColorPicker("", selection: $host.textBoxFontColor)
+                        .frame(width: 28)
+                        .help("Text color")
+                }
 
                 if host.activeTool == .highlight {
                     Button { showColorPicker.toggle() } label: {
@@ -615,10 +879,20 @@ struct PDFReaderView: View {
 
                 Spacer()
 
-                Button { saveWithFeedback() } label: { Image(systemName: "square.and.arrow.down") }
-                    .keyboardShortcut("s", modifiers: .command)
-                    .disabled(!host.hasUnsavedChanges)
-                    .help("Save (⌘S)")
+                // Find button
+                Button {
+                    showFind.toggle()
+                    if !showFind { host.clearFind(); findQuery = "" }
+                } label: { Image(systemName: "magnifyingglass") }
+                    .foregroundStyle(showFind ? Color.accentColor : Color.primary)
+                    .help("Find (⌘F)")
+
+                Button { saveWithFeedback() } label: {
+                    Text("💾").font(.system(size: 15))
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!host.hasUnsavedChanges)
+                .help("Save (⌘S)")
 
                 if savedFeedback {
                     Text("Saved ✓")
@@ -663,20 +937,39 @@ struct PDFReaderView: View {
         }
         .onAppear {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                let noMods = event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+                let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+                let noMods = mods.isEmpty
+                let cmdOnly = mods == .command
+
                 // Spacebar switches tabs even when a text field is focused
                 if noMods, event.charactersIgnoringModifiers == " " {
-                    onSwitchTab()
+                    onSwitchTab(); return nil
+                }
+                // Escape closes find bar
+                if noMods, event.keyCode == 53, showFind {
+                    showFind = false; host.clearFind(); findQuery = ""; return nil
+                }
+                // Cmd+F — toggle find bar
+                if cmdOnly, event.charactersIgnoringModifiers == "f" {
+                    showFind.toggle()
+                    if !showFind { host.clearFind(); findQuery = "" }
                     return nil
                 }
-                guard noMods, !(NSApp.keyWindow?.firstResponder is NSText) else { return event }
-                switch event.charactersIgnoringModifiers {
-                case "a": host.activeTool = .cursor;        return nil
-                case "s": host.activeTool = .highlight;     return nil
-                case "d": host.activeTool = .strikethrough; return nil
-                case "f": onSwitchTab();                    return nil
-                default:  return event
+                // Cmd+W — close current tab
+                if cmdOnly, event.charactersIgnoringModifiers == "w" {
+                    onCloseTab(); return nil
                 }
+                guard noMods, !(NSApp.keyWindow?.firstResponder is NSText) else { return event }
+                let key = event.charactersIgnoringModifiers ?? ""
+                guard !key.isEmpty else { return event }
+                let sc = ShortcutStore.shared
+                if !sc.cursor.isEmpty        && key == sc.cursor        { host.activeTool = .cursor;        host.textBoxMode = false; return nil }
+                if !sc.highlight.isEmpty     && key == sc.highlight     { host.activeTool = .highlight;     host.textBoxMode = false; return nil }
+                if !sc.strikethrough.isEmpty && key == sc.strikethrough { host.activeTool = .strikethrough; host.textBoxMode = false; return nil }
+                if !sc.textBox.isEmpty       && key == sc.textBox       { host.textBoxMode.toggle(); return nil }
+                if !sc.switchTab.isEmpty     && key == sc.switchTab     { onSwitchTab(); return nil }
+                if !sc.openQuiz.isEmpty      && key == sc.openQuiz      { showQuiz.toggle(); return nil }
+                return event
             }
         }
         .onDisappear {
@@ -692,18 +985,20 @@ struct PDFReaderView: View {
 
     @ViewBuilder
     private func toolButton(_ tool: AnnotationTool) -> some View {
-        let isActive = host.activeTool == tool
-        Button { host.activeTool = tool } label: {
+        let isActive = host.activeTool == tool && !host.textBoxMode
+        Button {
+            host.activeTool = tool
+            host.textBoxMode = false
+        } label: {
             Image(systemName: tool.icon)
         }
-        .keyboardShortcut(tool.shortcut, modifiers: [])
         .buttonStyle(.bordered)
         .foregroundStyle(isActive ? Color.accentColor : Color.primary)
         .background(
             isActive ? Color.accentColor.opacity(0.15) : Color.clear,
             in: RoundedRectangle(cornerRadius: 6)
         )
-        .help("\(tool.label) (\(String(tool.shortcut.character).uppercased()))")
+        .help(tool.label)
     }
 }
 
@@ -854,7 +1149,7 @@ struct WelcomeView: View {
             Image(systemName: "doc.richtext")
                 .font(.system(size: 72))
                 .foregroundColor(.secondary)
-            Text("PDF Reader")
+            Text("Forms PDF Reader")
                 .font(.largeTitle).fontWeight(.semibold)
             Text("Open a PDF file to get started")
                 .foregroundColor(.secondary)
@@ -874,6 +1169,57 @@ struct WelcomeView: View {
             }
             .frame(width: 0, height: 0).opacity(0)
         )
+    }
+}
+
+// MARK: - Find Bar
+
+struct FindBar: View {
+    @ObservedObject var host: PDFViewHost
+    @Binding var query: String
+    @Binding var isVisible: Bool
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 13))
+
+            TextField("Find in PDF…", text: $query)
+                .frame(width: 200)
+                .focused($focused)
+                .onSubmit { host.findNext() }
+                .onChange(of: query) { _, newVal in host.search(newVal) }
+
+            if host.isFinding {
+                ProgressView().scaleEffect(0.6).frame(width: 18, height: 18)
+            } else if !query.isEmpty {
+                if host.findResults.isEmpty {
+                    Text("No results").font(.system(size: 11)).foregroundStyle(.secondary)
+                } else {
+                    Text("\(host.findIndex + 1) of \(host.findResults.count)")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+
+            Button { host.findPrev() } label: { Image(systemName: "chevron.up") }
+                .disabled(host.findResults.isEmpty).help("Previous (⌘↑)")
+
+            Button { host.findNext() } label: { Image(systemName: "chevron.down") }
+                .disabled(host.findResults.isEmpty).help("Next (⌘↓)")
+
+            Spacer()
+
+            Button {
+                isVisible = false; host.clearFind(); query = ""
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 10))
+            }
+            .buttonStyle(.plain).help("Close (Esc)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(NSColor.windowBackgroundColor))
+        .onAppear { focused = true }
     }
 }
 
@@ -907,6 +1253,8 @@ class QuizModel: ObservableObject {
     @Published private(set) var key: [Character] = []
     @Published private(set) var results: [QuizEntry] = []
     @Published private(set) var current: Int = 0
+    @Published var lastFeedbackText = ""
+    @Published var lastFeedbackCorrect: Bool? = nil
 
     var score: Int { results.filter(\.ok).count }
     var total: Int { results.count }
@@ -919,6 +1267,12 @@ class QuizModel: ObservableObject {
             QuizEntry(number: $0.offset + 1, given: $0.element, correct: keyLetters[$0.offset])
         }
         current = doneLetters.count
+        if let last = results.last {
+            lastFeedbackText = last.ok
+                ? "✓  correct   \(score)/\(total)  \(String(format: "%.1f", pct))%"
+                : "✗  was \(last.correct)   \(score)/\(total)  \(String(format: "%.1f", pct))%"
+            lastFeedbackCorrect = last.ok
+        }
         phase = current >= 50 ? .summary : .active
     }
 
@@ -926,6 +1280,12 @@ class QuizModel: ObservableObject {
         guard current < key.count else { return }
         results.append(QuizEntry(number: current + 1, given: c, correct: key[current]))
         current += 1
+        if let last = results.last {
+            lastFeedbackText = last.ok
+                ? "✓  correct   \(score)/\(total)  \(String(format: "%.1f", pct))%"
+                : "✗  was \(last.correct)   \(score)/\(total)  \(String(format: "%.1f", pct))%"
+            lastFeedbackCorrect = last.ok
+        }
         if current >= 50 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.phase = .summary }
         }
@@ -935,10 +1295,17 @@ class QuizModel: ObservableObject {
         guard !results.isEmpty, phase == .active else { return }
         results.removeLast()
         current -= 1
+        if !results.isEmpty {
+            lastFeedbackText = "undone — Q\(current + 1)"
+            lastFeedbackCorrect = nil
+        } else {
+            lastFeedbackText = ""
+            lastFeedbackCorrect = nil
+        }
     }
 
-    func newQuiz() { key = []; results = []; current = 0; phase = .setup }
-    func retry()   { results = []; current = 0; phase = .active }
+    func newQuiz() { key = []; results = []; current = 0; phase = .setup; lastFeedbackText = ""; lastFeedbackCorrect = nil }
+    func retry()   { results = []; current = 0; phase = .active; lastFeedbackText = ""; lastFeedbackCorrect = nil }
 
     func sheetsText() -> String {
         results.map { "\($0.given)\t\($0.correct)" }.joined(separator: "\n")
@@ -1036,6 +1403,11 @@ struct QuizActiveView: View {
     @State private var copied = false
     @FocusState private var focused: Bool
 
+    private func feedbackColorFor(_ correct: Bool?) -> Color {
+        guard let c = correct else { return .qSubtext }
+        return c ? .qGreen : .qRed
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
@@ -1059,7 +1431,8 @@ struct QuizActiveView: View {
 
                 Button("undo") {
                     model.undo()
-                    feedbackText = "undone — Q\(model.current + 1)"; feedbackColor = .qSubtext
+                    feedbackText = model.lastFeedbackText
+                    feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
                 }
                 .keyboardShortcut("u", modifiers: .command)
                 .buttonStyle(.plain).font(.system(size: 13, weight: .bold))
@@ -1118,7 +1491,14 @@ struct QuizActiveView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            // Restore feedback state after panel was closed and reopened
+            if !model.lastFeedbackText.isEmpty {
+                feedbackText = model.lastFeedbackText
+                feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
+            }
+        }
     }
 
     @ViewBuilder private func logRow(_ e: QuizEntry) -> some View {
@@ -1239,5 +1619,100 @@ struct QuizSummaryView: View {
         NSPasteboard.general.setString(model.sheetsText(), forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { copied = false }
+    }
+}
+
+// MARK: - Settings
+
+struct SettingsView: View {
+    @ObservedObject private var sc = ShortcutStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Keyboard Shortcuts")
+                .font(.headline)
+                .padding(.bottom, 12)
+
+            Group {
+                sectionHeader("Annotation Tools")
+                ShortcutRow(label: "Cursor mode",        key: $sc.cursor)
+                ShortcutRow(label: "Highlight mode",     key: $sc.highlight)
+                ShortcutRow(label: "Strikethrough mode", key: $sc.strikethrough)
+                ShortcutRow(label: "Text box",           key: $sc.textBox)
+            }
+
+            Divider().padding(.vertical, 10)
+
+            Group {
+                sectionHeader("Navigation & Tools")
+                ShortcutRow(label: "Switch tab",   key: $sc.switchTab)
+                ShortcutRow(label: "Quiz checker", key: $sc.openQuiz)
+            }
+
+            Divider().padding(.vertical, 10)
+
+            Text("Fixed shortcuts: ⌘F Find · ⌘Z Undo · ⌘⇧Z Redo · ⌘S Save · ⌘O Open · ⌘W Close tab · Space Switch tab")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+
+    @ViewBuilder private func sectionHeader(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 4)
+    }
+}
+
+struct ShortcutRow: View {
+    let label: String
+    @Binding var key: String
+    @State private var recording = false
+    @State private var monitor: Any?
+
+    var body: some View {
+        HStack {
+            Text(label).frame(width: 165, alignment: .leading)
+
+            Button(recording ? "Press a key…" : (key.isEmpty ? "None" : key.uppercased())) {
+                recording ? stopRecording() : startRecording()
+            }
+            .frame(width: 110)
+            .foregroundStyle(recording ? Color.accentColor : Color.primary)
+            .background(
+                recording ? Color.accentColor.opacity(0.1) : Color(NSColor.controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 5)
+            )
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(
+                recording ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: 1))
+
+            Button("Clear") { key = "" }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .opacity(key.isEmpty ? 0.3 : 1)
+                .disabled(key.isEmpty)
+        }
+        .padding(.vertical, 3)
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 { self.stopRecording(); return nil } // Escape = cancel
+            let raw = event.charactersIgnoringModifiers ?? ""
+            if let ch = raw.first, ch.isLetter { self.key = String(ch).lowercased() }
+            self.stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        recording = false
+        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
     }
 }
