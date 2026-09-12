@@ -168,6 +168,7 @@ class AnnotatingPDFView: PDFView {
     var onLeftClick: ((PDFPage, CGPoint) -> Void)?
     var onRightClick: ((PDFPage, CGPoint) -> Void)?
     var onAnnotationMoved: ((PDFAnnotation, PDFPage, CGRect, CGRect) -> Void)?
+    var onAnnotationSelected: ((PDFAnnotation?, PDFPage?) -> Void)?
     var suppressContextMenu = false
     var cursorModeActive = false
 
@@ -227,10 +228,16 @@ class AnnotatingPDFView: PDFView {
             let finalBounds = ann.bounds
             if finalBounds != dragOriginalBounds {
                 onAnnotationMoved?(ann, page, dragOriginalBounds, finalBounds)
+                onAnnotationSelected?(nil, nil)
+            } else {
+                // No movement — treat as a selection click
+                onAnnotationSelected?(ann, page)
             }
             dragAnnotation = nil; dragPage = nil; isResizingAnnotation = false
             return
         }
+        // Clicking empty space deselects
+        if cursorModeActive { onAnnotationSelected?(nil, nil) }
         super.mouseUp(with: event)
         let loc = event.locationInWindow
         let dx = loc.x - mouseDownLocation.x
@@ -282,8 +289,11 @@ class PDFViewHost: ObservableObject {
         didSet {
             pdfView?.suppressContextMenu = (activeTool == .highlight)
             pdfView?.cursorModeActive = (activeTool == .cursor)
+            if activeTool != .cursor { selectedAnnotation = nil; selectedPage = nil }
         }
     }
+    @Published var selectedAnnotation: PDFAnnotation?
+    @Published var selectedPage: PDFPage?
     @Published var highlightColor: Color = Color(red: 1.0, green: 1.0, blue: 0.0)
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
@@ -337,6 +347,18 @@ class PDFViewHost: ObservableObject {
         view.onAnnotationMoved = { [weak self] ann, page, old, new in
             self?.pushUndo(.moved(ann, page, old, new))
         }
+        view.onAnnotationSelected = { [weak self] ann, page in
+            self?.selectedAnnotation = ann
+            self?.selectedPage = page
+        }
+    }
+
+    func deleteSelectedAnnotation() {
+        guard let ann = selectedAnnotation, let page = selectedPage else { return }
+        page.removeAnnotation(ann)
+        pushUndo(.removed([(ann, page)]))
+        selectedAnnotation = nil
+        selectedPage = nil
     }
 
     // Auto-apply current tool when the user finishes a drag-selection.
@@ -1029,6 +1051,12 @@ struct PDFReaderView: View {
                 // Cmd+W — close current tab
                 if cmdOnly, event.charactersIgnoringModifiers == "w" {
                     onCloseTab(); return nil
+                }
+                // Delete/Backspace removes a selected text box annotation
+                if noMods, (event.keyCode == 51 || event.keyCode == 117),
+                   !(NSApp.keyWindow?.firstResponder is NSText),
+                   host.selectedAnnotation != nil {
+                    host.deleteSelectedAnnotation(); return nil
                 }
                 guard noMods, !(NSApp.keyWindow?.firstResponder is NSText) else { return event }
                 let key = event.charactersIgnoringModifiers ?? ""
