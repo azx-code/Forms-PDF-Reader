@@ -376,6 +376,15 @@ class PDFViewHost: ObservableObject {
     // Left-click: remove annotation under cursor, or place text box.
     private func handleLeftClick(page: PDFPage, pagePoint: CGPoint) {
         if textBoxMode {
+            // Clicking an existing freeText annotation switches to cursor+select instead of spawning a new editor
+            let hit = CGRect(x: pagePoint.x - 4, y: pagePoint.y - 4, width: 8, height: 8)
+            if let existing = page.annotations.first(where: { $0.type == "FreeText" && $0.bounds.intersects(hit) }) {
+                textBoxMode = false
+                activeTool = .cursor
+                selectedAnnotation = existing
+                selectedPage = page
+                return
+            }
             addTextBox(page: page, pagePoint: pagePoint)
             return
         }
@@ -924,8 +933,8 @@ struct PDFReaderView: View {
                 )
                 .help("Text Box")
 
-                // Font controls — only visible while text box mode is on
-                if host.textBoxMode {
+                // Font controls — visible in text box mode or when a text box is selected
+                if host.textBoxMode || host.selectedAnnotation != nil {
                     Divider().frame(height: 20)
 
                     HStack(spacing: 3) {
@@ -938,11 +947,17 @@ struct PDFReaderView: View {
                         .frame(width: 36)
                         .multilineTextAlignment(.center)
                         .font(.system(size: 12))
+                        .onChange(of: host.textBoxFontSize) { _, size in
+                            host.selectedAnnotation?.font = NSFont.systemFont(ofSize: size)
+                        }
                     }
 
                     ColorPicker("", selection: $host.textBoxFontColor)
                         .frame(width: 28)
                         .help("Text color")
+                        .onChange(of: host.textBoxFontColor) { _, color in
+                            host.selectedAnnotation?.fontColor = NSColor(color)
+                        }
                 }
 
                 if host.activeTool == .highlight {
@@ -1034,8 +1049,9 @@ struct PDFReaderView: View {
                 let noMods = mods.isEmpty
                 let cmdOnly = mods == .command
 
-                // Spacebar switches tabs — but not when the find bar is open
-                if noMods, event.charactersIgnoringModifiers == " ", !showFind {
+                // Spacebar switches tabs — but not when find bar is open or a text field is focused
+                if noMods, event.charactersIgnoringModifiers == " ", !showFind,
+                   !(NSApp.keyWindow?.firstResponder is NSText) {
                     onSwitchTab(); return nil
                 }
                 // Escape closes find bar
