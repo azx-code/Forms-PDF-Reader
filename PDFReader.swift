@@ -299,6 +299,7 @@ class PDFViewHost: ObservableObject {
     @Published private(set) var canRedo = false
     @Published private(set) var hasUnsavedChanges = false
     @Published var textBoxMode = false
+    @Published var textEditorActive = false
     @Published var textBoxFontSize: CGFloat = 16
     @Published var textBoxFontColor: Color = .black
     @Published var findResults: [PDFSelection] = []
@@ -413,7 +414,9 @@ class PDFViewHost: ObservableObject {
         let color = NSColor(textBoxFontColor)
 
         let editor = TextBoxEditor(frame: editorFrame, font: font, color: color)
+        textEditorActive = true
         editor.onCommit = { [weak self, weak pdfView] text in
+            self?.textEditorActive = false
             guard let self = self, let pdfView = pdfView, !text.isEmpty else { return }
             // Convert editor corners back to page coordinates
             let topY    = pdfView.isFlipped ? editorFrame.minY : editorFrame.maxY
@@ -433,6 +436,7 @@ class PDFViewHost: ObservableObject {
             page.addAnnotation(ann)
             self.pushUndo(.added([(ann, page)]))
         }
+        editor.onCancel = { [weak self] in self?.textEditorActive = false }
 
         pdfView.addSubview(editor)
         editor.textView.window?.makeFirstResponder(editor.textView)
@@ -614,6 +618,7 @@ class PDFViewHost: ObservableObject {
 private class TextBoxEditor: NSView {
     let textView: NSTextView
     var onCommit: ((String) -> Void)?
+    var onCancel: (() -> Void)?
     private var clickMonitor: Any?
     private var keyMonitor: Any?
 
@@ -662,7 +667,7 @@ private class TextBoxEditor: NSView {
         cleanup(); onCommit?(text); removeFromSuperview()
     }
 
-    func cancel() { cleanup(); removeFromSuperview() }
+    func cancel() { cleanup(); onCancel?(); removeFromSuperview() }
 
     private func cleanup() {
         if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
@@ -1045,6 +1050,9 @@ struct PDFReaderView: View {
         }
         .onAppear {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Pass all keys through while a text box editor is open
+                if host.textEditorActive { return event }
+
                 let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
                 let noMods = mods.isEmpty
                 let cmdOnly = mods == .command
