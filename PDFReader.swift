@@ -942,13 +942,11 @@ struct PDFReaderView: View {
                 // Page navigation
                 Button { currentPage -= 1 } label: { Image(systemName: "chevron.left") }
                     .disabled(currentPage == 0)
-                    .keyboardShortcut(.leftArrow, modifiers: [])
 
                 PageTextField(currentPage: $currentPage, totalPages: totalPages)
 
                 Button { currentPage += 1 } label: { Image(systemName: "chevron.right") }
                     .disabled(currentPage >= totalPages - 1)
-                    .keyboardShortcut(.rightArrow, modifiers: [])
 
                 Divider().frame(height: 20)
 
@@ -1115,8 +1113,10 @@ struct PDFReaderView: View {
                    host.selectedAnnotation != nil {
                     host.deleteSelectedAnnotation(); return nil
                 }
-                let textFocused = NSApp.keyWindow?.firstResponder is NSText
-                guard noMods, !(textFocused && showFind) else { return event }
+                guard noMods, !(NSApp.keyWindow?.firstResponder is NSText) else { return event }
+                // Arrow keys — page navigation (here so they're blocked when a text field is focused)
+                if event.keyCode == 123 { currentPage = max(0, currentPage - 1); return nil }
+                if event.keyCode == 124 { currentPage = min(totalPages - 1, currentPage + 1); return nil }
                 let key = event.charactersIgnoringModifiers ?? ""
                 guard !key.isEmpty else { return event }
                 let sc = ShortcutStore.shared
