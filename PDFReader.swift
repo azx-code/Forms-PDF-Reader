@@ -279,7 +279,8 @@ class AnnotatingPDFView: PDFView {
 private enum UndoEntry {
     case added([(PDFAnnotation, PDFPage)])
     case removed([(PDFAnnotation, PDFPage)])
-    case moved(PDFAnnotation, PDFPage, CGRect, CGRect)  // ann, page, oldBounds, newBounds
+    case moved(PDFAnnotation, PDFPage, CGRect, CGRect)    // ann, page, oldBounds, newBounds
+    case edited(PDFAnnotation, PDFPage, String, String)   // ann, page, oldContents, newContents
 }
 
 class PDFViewHost: ObservableObject {
@@ -300,8 +301,8 @@ class PDFViewHost: ObservableObject {
     @Published private(set) var hasUnsavedChanges = false
     @Published var textBoxMode = false
     @Published var textEditorActive = false
-    @Published var textBoxFontSize: CGFloat = 16
-    @Published var textBoxFontColor: Color = .black
+    @Published var textBoxFontSize: CGFloat = 9
+    @Published var textBoxFontColor: Color = .red
     @Published var findResults: [PDFSelection] = []
     @Published var findIndex: Int = -1
     @Published var isFinding = false
@@ -349,9 +350,40 @@ class PDFViewHost: ObservableObject {
             self?.pushUndo(.moved(ann, page, old, new))
         }
         view.onAnnotationSelected = { [weak self] ann, page in
-            self?.selectedAnnotation = ann
-            self?.selectedPage = page
+            if let ann = ann, let page = page {
+                self?.reopenEditor(for: ann, page: page)
+            }
         }
+    }
+
+    func reopenEditor(for ann: PDFAnnotation, page: PDFPage) {
+        guard let pdfView = pdfView else { return }
+        // Convert annotation top-left (page coords: minX, maxY) to view coords
+        let pageTopLeft  = CGPoint(x: ann.bounds.minX, y: ann.bounds.maxY)
+        let pageBotRight = CGPoint(x: ann.bounds.maxX, y: ann.bounds.minY)
+        let viewTL = pdfView.convert(pageTopLeft,  from: page)
+        let viewBR = pdfView.convert(pageBotRight, from: page)
+        let editorW = max(200, abs(viewBR.x - viewTL.x))
+        let editorH = max(60,  abs(viewBR.y - viewTL.y))
+        let editorOriginY: CGFloat = pdfView.isFlipped ? viewTL.y : viewTL.y - editorH
+        let editorFrame = CGRect(x: viewTL.x, y: editorOriginY, width: editorW, height: editorH)
+
+        let font  = ann.font      ?? NSFont.systemFont(ofSize: textBoxFontSize)
+        let color = ann.fontColor ?? NSColor(textBoxFontColor)
+
+        let editor = TextBoxEditor(frame: editorFrame, font: font, color: color)
+        editor.textView.string = ann.contents ?? ""
+        textEditorActive = true
+        let oldContents = ann.contents ?? ""
+        editor.onCommit = { [weak self] newText in
+            self?.textEditorActive = false
+            guard !newText.isEmpty else { return }
+            ann.contents = newText
+            self?.pushUndo(.edited(ann, page, oldContents, newText))
+        }
+        editor.onCancel = { [weak self] in self?.textEditorActive = false }
+        pdfView.addSubview(editor)
+        editor.textView.window?.makeFirstResponder(editor.textView)
     }
 
     func deleteSelectedAnnotation() {
@@ -382,8 +414,7 @@ class PDFViewHost: ObservableObject {
             if let existing = page.annotations.first(where: { $0.type == "FreeText" && $0.bounds.intersects(hit) }) {
                 textBoxMode = false
                 activeTool = .cursor
-                selectedAnnotation = existing
-                selectedPage = page
+                reopenEditor(for: existing, page: page)
                 return
             }
             addTextBox(page: page, pagePoint: pagePoint)
@@ -510,9 +541,10 @@ class PDFViewHost: ObservableObject {
     func undo() {
         guard let entry = undoHistory.popLast() else { return }
         switch entry {
-        case .added(let items):         items.forEach { $0.1.removeAnnotation($0.0) }
-        case .removed(let items):       items.forEach { $0.1.addAnnotation($0.0) }
+        case .added(let items):              items.forEach { $0.1.removeAnnotation($0.0) }
+        case .removed(let items):            items.forEach { $0.1.addAnnotation($0.0) }
         case .moved(let ann, _, let old, _): ann.bounds = old
+        case .edited(let ann, _, let old, _): ann.contents = old
         }
         redoHistory.append(entry)
         canUndo = !undoHistory.isEmpty
@@ -522,9 +554,10 @@ class PDFViewHost: ObservableObject {
     func redo() {
         guard let entry = redoHistory.popLast() else { return }
         switch entry {
-        case .added(let items):         items.forEach { $0.1.addAnnotation($0.0) }
-        case .removed(let items):       items.forEach { $0.1.removeAnnotation($0.0) }
-        case .moved(let ann, _, _, let new): ann.bounds = new
+        case .added(let items):               items.forEach { $0.1.addAnnotation($0.0) }
+        case .removed(let items):             items.forEach { $0.1.removeAnnotation($0.0) }
+        case .moved(let ann, _, _, let new):  ann.bounds = new
+        case .edited(let ann, _, _, let new): ann.contents = new
         }
         undoHistory.append(entry)
         canUndo = true
@@ -1082,7 +1115,8 @@ struct PDFReaderView: View {
                    host.selectedAnnotation != nil {
                     host.deleteSelectedAnnotation(); return nil
                 }
-                guard noMods, !(NSApp.keyWindow?.firstResponder is NSText) else { return event }
+                let textFocused = NSApp.keyWindow?.firstResponder is NSText
+                guard noMods, !(textFocused && showFind) else { return event }
                 let key = event.charactersIgnoringModifiers ?? ""
                 guard !key.isEmpty else { return event }
                 let sc = ShortcutStore.shared
