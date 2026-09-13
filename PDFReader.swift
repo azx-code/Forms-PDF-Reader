@@ -358,7 +358,6 @@ class PDFViewHost: ObservableObject {
 
     func reopenEditor(for ann: PDFAnnotation, page: PDFPage) {
         guard let pdfView = pdfView else { return }
-        // Convert annotation top-left (page coords: minX, maxY) to view coords
         let pageTopLeft  = CGPoint(x: ann.bounds.minX, y: ann.bounds.maxY)
         let pageBotRight = CGPoint(x: ann.bounds.maxX, y: ann.bounds.minY)
         let viewTL = pdfView.convert(pageTopLeft,  from: page)
@@ -368,20 +367,34 @@ class PDFViewHost: ObservableObject {
         let editorOriginY: CGFloat = pdfView.isFlipped ? viewTL.y : viewTL.y - editorH
         let editorFrame = CGRect(x: viewTL.x, y: editorOriginY, width: editorW, height: editorH)
 
-        let font  = ann.font      ?? NSFont.systemFont(ofSize: textBoxFontSize)
-        let color = ann.fontColor ?? NSColor(textBoxFontColor)
+        let pdfFont     = ann.font      ?? NSFont.systemFont(ofSize: textBoxFontSize)
+        let displayFont = NSFont.systemFont(ofSize: pdfFont.pointSize * pdfView.scaleFactor)
+        let color       = ann.fontColor ?? NSColor(textBoxFontColor)
 
-        let editor = TextBoxEditor(frame: editorFrame, font: font, color: color)
+        // Hide annotation while editing so there's no ghost text underneath
+        page.removeAnnotation(ann)
+
+        let editor = TextBoxEditor(frame: editorFrame, font: displayFont, color: color)
         editor.textView.string = ann.contents ?? ""
         textEditorActive = true
         let oldContents = ann.contents ?? ""
         editor.onCommit = { [weak self] newText in
             self?.textEditorActive = false
-            guard !newText.isEmpty else { return }
+            if newText.isEmpty {
+                // Deleted all text — annotation is gone (push undo to restore it)
+                self?.pushUndo(.removed([(ann, page)]))
+                return
+            }
             ann.contents = newText
-            self?.pushUndo(.edited(ann, page, oldContents, newText))
+            page.addAnnotation(ann)
+            if newText != oldContents {
+                self?.pushUndo(.edited(ann, page, oldContents, newText))
+            }
         }
-        editor.onCancel = { [weak self] in self?.textEditorActive = false }
+        editor.onCancel = { [weak self] in
+            self?.textEditorActive = false
+            page.addAnnotation(ann)  // restore unchanged
+        }
         pdfView.addSubview(editor)
         editor.textView.window?.makeFirstResponder(editor.textView)
     }
@@ -430,26 +443,22 @@ class PDFViewHost: ObservableObject {
     private func addTextBox(page: PDFPage, pagePoint: CGPoint) {
         guard let pdfView = pdfView else { return }
 
-        // Convert page coordinates → view coordinates
         let viewPt = pdfView.convert(pagePoint, from: page)
         let editorW: CGFloat = 380
         let editorH: CGFloat = 140
 
-        // Place editor: account for whether PDFView is flipped (y-down) or not (y-up)
-        let editorOriginY: CGFloat = pdfView.isFlipped
-            ? viewPt.y                    // y-down: origin is top-left
-            : viewPt.y - editorH          // y-up:   origin is bottom-left
+        let editorOriginY: CGFloat = pdfView.isFlipped ? viewPt.y : viewPt.y - editorH
         let editorFrame = CGRect(x: viewPt.x, y: editorOriginY, width: editorW, height: editorH)
 
-        let font = NSFont.systemFont(ofSize: textBoxFontSize)
-        let color = NSColor(textBoxFontColor)
+        let pdfFont     = NSFont.systemFont(ofSize: textBoxFontSize)
+        let displayFont = NSFont.systemFont(ofSize: textBoxFontSize * pdfView.scaleFactor)
+        let color       = NSColor(textBoxFontColor)
 
-        let editor = TextBoxEditor(frame: editorFrame, font: font, color: color)
+        let editor = TextBoxEditor(frame: editorFrame, font: displayFont, color: color)
         textEditorActive = true
         editor.onCommit = { [weak self, weak pdfView] text in
             self?.textEditorActive = false
             guard let self = self, let pdfView = pdfView, !text.isEmpty else { return }
-            // Convert editor corners back to page coordinates
             let topY    = pdfView.isFlipped ? editorFrame.minY : editorFrame.maxY
             let bottomY = pdfView.isFlipped ? editorFrame.maxY : editorFrame.minY
             let tlPage = pdfView.convert(CGPoint(x: editorFrame.minX, y: topY),    to: page)
@@ -459,7 +468,7 @@ class PDFViewHost: ObservableObject {
                 width: abs(brPage.x - tlPage.x), height: abs(tlPage.y - brPage.y)
             )
             let ann = PDFAnnotation(bounds: annBounds, forType: .freeText, withProperties: nil)
-            ann.font      = font
+            ann.font      = pdfFont   // unscaled — PDF renders at correct size
             ann.fontColor = color
             ann.color     = .clear
             ann.contents  = text
