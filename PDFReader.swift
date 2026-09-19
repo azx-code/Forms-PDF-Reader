@@ -602,9 +602,7 @@ class PDFViewHost: ObservableObject {
         guard let document = pdfView?.document else { return }
         if let qm = quizModel { embedQuizData(qm, timerModel: timerModel, in: document) }
         if let url = document.documentURL {
-            document.write(to: url)
-            hasUnsavedChanges = false
-            hasUnsavedQuizData = false
+            writeSafely(document, to: url)
         } else {
             saveAs()
         }
@@ -617,7 +615,23 @@ class PDFViewHost: ObservableObject {
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = document.documentURL?.lastPathComponent ?? "document.pdf"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        document.write(to: url)
+        writeSafely(document, to: url)
+    }
+
+    // Write to a temp file first, then atomically replace the destination.
+    // This prevents PDFKit from corrupting pages it hasn't yet lazy-loaded
+    // when the source and destination URL are the same file.
+    private func writeSafely(_ document: PDFDocument, to url: URL) {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString + ".pdf")
+        guard document.write(to: tmp) else { return }
+        do {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        } catch {
+            // Fallback: move temp over destination directly
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.moveItem(at: tmp, to: url)
+        }
         hasUnsavedChanges = false
         hasUnsavedQuizData = false
     }
