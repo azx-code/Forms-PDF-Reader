@@ -2333,9 +2333,7 @@ struct QuizActiveView: View {
                     .foregroundColor(model.results.isEmpty ? Color.qSubtext.opacity(0.3) : .qSubtext)
                     .disabled(model.results.isEmpty)
 
-                    Button(copied ? "copied!" : "copy") { copySheet() }
-                        .buttonStyle(.plain).font(.system(size: 14, weight: .bold))
-                        .foregroundColor(copied ? .qGreen : .qSubtext)
+                    // copy moved to right cluster
 
                     if model.trackingOnly {
                         let addKeyLetters = Array(addKeyText.uppercased().filter { $0.isLetter })
@@ -2381,7 +2379,7 @@ struct QuizActiveView: View {
                         }
                     } label: {
                         HStack(spacing: 3) {
-                            Text("log").font(.system(size: 14, weight: .bold))
+                            Text("log/notes").font(.system(size: 14, weight: .bold))
                                 .foregroundColor(showLog ? .qAccent : .qSubtext)
                             Image(systemName: showLog ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 11, weight: .bold))
@@ -2409,10 +2407,22 @@ struct QuizActiveView: View {
                         .lineLimit(1)
                 }
 
-                // ── Right cluster: reveal toggles ─────────────────────────
+                // ── Right cluster: copy + reveal toggles ─────────────────
                 HStack(spacing: 8) {
+                    Button { copySheet() } label: {
+                        HStack(spacing: 5) {
+                            Text(copied ? "copied!" : "copy to spreadsheet")
+                                .font(.system(size: 14, weight: .bold))
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 10))
+                                .foregroundColor(.qSubtext.opacity(0.6))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(copied ? .qGreen : .qSubtext)
+                    .help("Pastes your answers, correct answers, and notes into 3 columns on Google Sheets / Excel")
+
                     if !model.trackingOnly {
-                        // Score toggle — first
                         Button {
                             model.revealScore.toggle()
                         } label: {
@@ -2426,7 +2436,6 @@ struct QuizActiveView: View {
                         .foregroundColor(model.revealScore ? .qAccent : .qSubtext)
                         .help(model.revealScore ? "Hide score" : "Show score")
 
-                        // Feedback toggle — second
                         Button {
                             model.revealFeedback.toggle()
                         } label: {
@@ -2440,7 +2449,6 @@ struct QuizActiveView: View {
                         .foregroundColor(model.revealFeedback ? .qGreen : .qSubtext)
                         .help(model.revealFeedback ? "Hide right/wrong feedback" : "Show right/wrong feedback")
                     }
-
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
@@ -2467,6 +2475,13 @@ struct QuizActiveView: View {
             focused = true
             if !model.lastFeedbackText.isEmpty {
                 feedbackText = model.lastFeedbackText
+                feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
+            }
+        }
+        .onChange(of: model.lastFeedbackText) { _, text in
+            // Handles case where restore() fires after onAppear (PDF was just opened)
+            if !text.isEmpty, feedbackText.isEmpty {
+                feedbackText = text
                 feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
             }
         }
@@ -2552,28 +2567,25 @@ struct QuizLogPanel: View {
             // ── Right: note editor ────────────────────────────────────────
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 0) {
-                    Text(notesAllView ? "all notes" : "Q\(selectedQ + 1) note")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.qSubtext)
-                    Spacer()
                     HStack(spacing: 0) {
                         Button { withAnimation { notesAllView = false } } label: {
-                            Text("Q\(selectedQ + 1)")
-                                .font(.system(size: 10, weight: .semibold))
+                            Text("Q\(selectedQ + 1) Note")
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundColor(!notesAllView ? .qText : .qSubtext)
-                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .padding(.horizontal, 8).padding(.vertical, 3)
                         }.buttonStyle(.plain)
                         Button { withAnimation { notesAllView = true } } label: {
-                            Text("all")
-                                .font(.system(size: 10, weight: .semibold))
+                            Text("All Notes")
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundColor(notesAllView ? .qText : .qSubtext)
-                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .padding(.horizontal, 8).padding(.vertical, 3)
                         }.buttonStyle(.plain)
                     }
                     .background(Color.white.opacity(0.05))
                     .cornerRadius(4)
+                    Spacer()
                 }
-                .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 2)
+                .padding(.horizontal, 10).padding(.top, 5).padding(.bottom, 6)
 
                 if notesAllView {
                     ScrollViewReader { proxy in
@@ -2614,7 +2626,7 @@ struct QuizLogPanel: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .frame(height: notesAllView ? 158 : 108)
+        .frame(height: notesAllView ? 140 : 82)
         .background(Color.qSurface)
     }
 
@@ -2786,6 +2798,8 @@ struct QuizSummaryView: View {
     @Binding var showNotes: Bool
     @Binding var notesAllView: Bool
     @State private var copied = false
+    @State private var showResults = false
+    @State private var showLogPanel = true
     @State private var showAddKey = false
     @State private var addKeyText = ""
     private var missed: [QuizEntry] { model.results.filter { !$0.ok } }
@@ -2793,165 +2807,198 @@ struct QuizSummaryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // ── Slim header ───────────────────────────────────────────────────
             HStack(spacing: 10) {
-                Text("Results").font(.system(size: 13, weight: .bold)).foregroundColor(.qText)
-
-                if model.trackingOnly {
-                    let addKeyLetters = Array(addKeyText.uppercased().filter { $0.isLetter })
-                    Button { showAddKey.toggle() } label: {
-                        Text("add key")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Color(red: 0.54, green: 0.67, blue: 0.86))
-                            .padding(.horizontal, 9).padding(.vertical, 4)
-                            .background(Color(red: 0.165, green: 0.247, blue: 0.373))
-                            .cornerRadius(5)
-                    }
-                    .buttonStyle(.plain)
-                    .popover(isPresented: $showAddKey, arrowEdge: .bottom) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
-                                Spacer()
-                                Text("\(addKeyLetters.count)/\(model.targetCount)").font(.system(size: 11))
-                                    .foregroundColor(addKeyLetters.count == model.targetCount ? .qGreen : .qSubtext)
-                            }
-                            TextEditor(text: $addKeyText)
-                                .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
-                                .scrollContentBackground(.hidden).background(Color.qSurface)
-                                .frame(width: 200, height: 52)
-                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
-                            Button {
-                                model.addKey(addKeyLetters); showAddKey = false; addKeyText = ""
-                            } label: {
-                                Text("apply key →")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundColor(addKeyLetters.count == model.targetCount ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
-                                    .padding(.horizontal, 10).padding(.vertical, 6)
-                                    .background(addKeyLetters.count == model.targetCount ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
-                                    .cornerRadius(6)
-                            }
-                            .buttonStyle(.plain).disabled(addKeyLetters.count != model.targetCount)
+                if showResults {
+                    if !model.trackingOnly {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text("\(model.score)/\(model.targetCount)")
+                                .font(.system(size: 14, weight: .bold)).foregroundColor(model.scoreColor)
+                            Text("(\(String(format: "%.1f", model.pct))%)")
+                                .font(.system(size: 12)).foregroundColor(model.scoreColor)
                         }
-                        .padding(12).background(Color.qBg).preferredColorScheme(.dark)
+                        Text(missed.isEmpty ? "· perfect!" : "· \(missed.count) missed")
+                            .font(.system(size: 11)).foregroundColor(missed.isEmpty ? .qGreen : .qSubtext)
+                        if flaggedCount > 0 {
+                            HStack(spacing: 3) {
+                                Image(systemName: "flag.fill").font(.system(size: 10)).foregroundColor(.orange)
+                                Text("\(flaggedCount)").font(.system(size: 11)).foregroundColor(.orange)
+                            }
+                        }
+                    } else {
+                        addKeySection
                     }
                 } else {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Text("\(model.score)/\(model.targetCount)")
-                            .font(.system(size: 14, weight: .bold)).foregroundColor(model.scoreColor)
-                        Text("\(String(format: "%.1f", model.pct))%")
-                            .font(.system(size: 12)).foregroundColor(model.scoreColor)
-                    }
+                    Text("done").font(.system(size: 13, weight: .semibold)).foregroundColor(.qSubtext)
+                    if model.trackingOnly { addKeySection }
                 }
-
-                Text(missed.isEmpty ? "· perfect!" : "· \(missed.count) missed")
-                    .font(.system(size: 11))
-                    .foregroundColor(missed.isEmpty ? .qGreen : .qSubtext)
-
-                if flaggedCount > 0 {
-                    HStack(spacing: 3) {
-                        Image(systemName: "flag.fill").font(.system(size: 10)).foregroundColor(.orange)
-                        Text("\(flaggedCount)").font(.system(size: 11)).foregroundColor(.orange)
-                    }
-                }
-
-                if !model.trackingOnly {
-                    Button { model.revealScore.toggle() } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: model.revealScore ? "eye.fill" : "eye.slash.fill")
-                            Text(model.revealScore ? "score on" : "score off")
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(model.revealScore ? .qAccent : .qText)
-                    .padding(.horizontal, 7).padding(.vertical, 4)
-                    .background(Color(white: 0.22)).cornerRadius(5)
-                    .help(model.revealScore ? "Hide score" : "Show score")
-
-                    Button { model.revealFeedback.toggle() } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: model.revealFeedback ? "checkmark.circle.fill" : "checkmark.circle")
-                            Text(model.revealFeedback ? "feedback on" : "feedback off")
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(model.revealFeedback ? .qGreen : .qText)
-                    .padding(.horizontal, 7).padding(.vertical, 4)
-                    .background(Color(white: 0.22)).cornerRadius(5)
-                    .help(model.revealFeedback ? "Hide feedback" : "Show feedback")
-                }
-
                 Spacer()
-
-                Button("undo") { model.undo() }
-                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.qText)
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Color(white: 0.22)).cornerRadius(5)
-
-                qBtn("new quiz", accent: true) { model.newQuiz() }
-                qBtn("retry") { model.retry() }
-
-                Button(copied ? "copied!" : "copy") { copySheet() }
-                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
-                    .foregroundColor(copied ? .qGreen : .qText)
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Color(white: 0.22)).cornerRadius(5)
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showNotes.toggle()
-                        if showNotes { showLog = false; notesAllView = true }
-                    }
-                } label: {
-                    Image(systemName: "note.text").font(.system(size: 12))
-                }
-                .buttonStyle(.plain).foregroundColor(showNotes ? .qAccent : .qText)
-                .help("Notes")
-
-                if !missed.isEmpty {
+                undoBtn
+                if showResults {
+                    copyBtn(highlighted: !showLogPanel)
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showLog.toggle()
-                            if showLog { showNotes = false }
-                        }
+                        withAnimation(.easeInOut(duration: 0.2)) { showLogPanel.toggle() }
                     } label: {
                         HStack(spacing: 3) {
-                            Text("missed").font(.system(size: 11, weight: .medium)).foregroundColor(.qText)
-                            Image(systemName: showLog ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 9)).foregroundColor(.qText)
+                            Text("log/notes").font(.system(size: 11, weight: .medium))
+                            Image(systemName: showLogPanel ? "chevron.up" : "chevron.down").font(.system(size: 9))
                         }
+                        .foregroundColor(.qText)
                     }
                     .buttonStyle(.plain)
+                    qBtn("new quiz", accent: true) { model.newQuiz() }
+                    qBtn("retry") { model.retry() }
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
 
-            if showNotes {
-                NotesPanel(model: model, notesAllView: $notesAllView, currentQ: model.results.count - 1)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
-            if showLog && !missed.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(missed) { e in
-                            HStack(spacing: 0) {
-                                Text(String(format: "Q%02d  ", e.number)).foregroundColor(.qSubtext)
-                                Text(String(e.given)).foregroundColor(.qRed)
-                                Text("  →  ").foregroundColor(.qSubtext)
-                                Text(String(e.correct)).foregroundColor(.qGreen)
-                            }
-                            .font(.system(size: 11, design: .monospaced))
+            // ── Panel area (takes over where log was) ─────────────────────────
+            if showLogPanel {
+                QuizLogPanel(model: model, viewingQ: model.results.count - 1)
+                    .transition(.opacity)
+            } else if showResults {
+                // Results panel
+                VStack(spacing: 14) {
+                    if !model.trackingOnly {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("\(model.score)/\(model.targetCount)")
+                                .font(.system(size: 28, weight: .bold)).foregroundColor(model.scoreColor)
+                            Text("(\(String(format: "%.1f", model.pct))%)")
+                                .font(.system(size: 18)).foregroundColor(model.scoreColor)
                         }
+                        Text(missed.isEmpty ? "Perfect score! 🎉" : "\(missed.count) question\(missed.count == 1 ? "" : "s") missed")
+                            .font(.system(size: 13)).foregroundColor(missed.isEmpty ? .qGreen : .qSubtext)
                     }
-                    .padding(8)
+                    HStack(spacing: 10) {
+                        Button { model.revealScore.toggle() } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: model.revealScore ? "eye.fill" : "eye.slash.fill")
+                                Text(model.revealScore ? "score on" : "score off")
+                            }.font(.system(size: 11, weight: .medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(model.revealScore ? .qAccent : .qText)
+                        .padding(.horizontal, 7).padding(.vertical, 4)
+                        .background(Color(white: 0.22)).cornerRadius(5)
+
+                        Button { model.revealFeedback.toggle() } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: model.revealFeedback ? "checkmark.circle.fill" : "checkmark.circle")
+                                Text(model.revealFeedback ? "feedback on" : "feedback off")
+                            }.font(.system(size: 11, weight: .medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(model.revealFeedback ? .qGreen : .qText)
+                        .padding(.horizontal, 7).padding(.vertical, 4)
+                        .background(Color(white: 0.22)).cornerRadius(5)
+
+                        copyBtn(highlighted: true)
+                    }
                 }
+                .frame(maxWidth: .infinity)
                 .frame(height: 110)
                 .background(Color.qSurface)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .transition(.opacity)
+            } else {
+                // Finish panel (state 1)
+                VStack(spacing: 16) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.qGreen).font(.system(size: 20))
+                        Text("Quiz complete!")
+                            .font(.system(size: 18, weight: .bold)).foregroundColor(.qText)
+                    }
+                    HStack(spacing: 12) {
+                        Button {
+                            withAnimation { showResults = true }
+                            model.revealScore = true; model.revealFeedback = true
+                        } label: {
+                            Text("see results")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(Color(red: 0.54, green: 0.67, blue: 0.86))
+                                .padding(.horizontal, 14).padding(.vertical, 7)
+                                .background(Color(red: 0.165, green: 0.247, blue: 0.373))
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+
+                        copyBtn(highlighted: false)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 110)
+                .background(Color.qSurface)
+                .transition(.opacity)
             }
+        }
+        .onAppear { showLog = true }
+        .animation(.easeInOut(duration: 0.18), value: showResults)
+        .animation(.easeInOut(duration: 0.18), value: showLogPanel)
+    }
+
+    @ViewBuilder private var undoBtn: some View {
+        Button("undo") { model.undo() }
+            .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
+            .foregroundColor(.qText)
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(Color(white: 0.22)).cornerRadius(5)
+    }
+
+    @ViewBuilder private func copyBtn(highlighted: Bool) -> some View {
+        Button { copySheet() } label: {
+            HStack(spacing: 5) {
+                Text(copied ? "copied!" : "copy to spreadsheet")
+                Image(systemName: "info.circle").font(.system(size: 9))
+                    .foregroundColor(highlighted && !copied ? Color(red: 0.54, green: 0.67, blue: 0.86).opacity(0.6) : .qText.opacity(0.4))
+            }
+            .font(.system(size: 11, weight: .medium))
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(copied ? .qGreen : (highlighted ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qText))
+        .padding(.horizontal, 9).padding(.vertical, 5)
+        .background(highlighted && !copied ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color(white: 0.22))
+        .cornerRadius(5)
+        .help("Pastes your answers, correct answers, and notes into 3 columns on Google Sheets / Excel")
+    }
+
+    @ViewBuilder private var addKeySection: some View {
+        let addKeyLetters = Array(addKeyText.uppercased().filter { $0.isLetter })
+        Button { showAddKey.toggle() } label: {
+            Text("add key")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color(red: 0.54, green: 0.67, blue: 0.86))
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(Color(red: 0.165, green: 0.247, blue: 0.373))
+                .cornerRadius(5)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showAddKey, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
+                    Spacer()
+                    Text("\(addKeyLetters.count)/\(model.targetCount)").font(.system(size: 11))
+                        .foregroundColor(addKeyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                }
+                TextEditor(text: $addKeyText)
+                    .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                    .scrollContentBackground(.hidden).background(Color.qSurface)
+                    .frame(width: 200, height: 52)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                Button {
+                    model.addKey(addKeyLetters); showAddKey = false; addKeyText = ""
+                    showResults = true; model.revealScore = true; model.revealFeedback = true
+                } label: {
+                    Text("apply key →")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(addKeyLetters.count == model.targetCount ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(addKeyLetters.count == model.targetCount ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
+                        .cornerRadius(6)
+                }
+                .buttonStyle(.plain).disabled(addKeyLetters.count != model.targetCount)
+            }
+            .padding(12).background(Color.qBg).preferredColorScheme(.dark)
         }
     }
 
