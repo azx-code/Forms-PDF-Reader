@@ -290,7 +290,7 @@ class PDFViewHost: ObservableObject {
     weak var pdfView: AnnotatingPDFView?
     weak var quizModel: QuizModel?
 
-    var hasUnsavedQuizData: Bool { quizModel?.phase != .modeSelect }
+    @Published var hasUnsavedQuizData = false
     @Published var currentScale: CGFloat = 1.0
     @Published var activeTool: AnnotationTool = .highlight {
         didSet {
@@ -551,7 +551,7 @@ class PDFViewHost: ObservableObject {
         pushUndo(.added([(ann, page)]))
     }
 
-    func discardChanges() { hasUnsavedChanges = false }
+    func discardChanges() { hasUnsavedChanges = false; hasUnsavedQuizData = false }
 
     func undo() {
         guard let entry = undoHistory.popLast() else { return }
@@ -594,6 +594,7 @@ class PDFViewHost: ObservableObject {
         if let url = document.documentURL {
             document.write(to: url)
             hasUnsavedChanges = false
+            hasUnsavedQuizData = false
         } else {
             saveAs()
         }
@@ -608,6 +609,7 @@ class PDFViewHost: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         document.write(to: url)
         hasUnsavedChanges = false
+        hasUnsavedQuizData = false
     }
 
     func applyHighlight() {
@@ -1419,13 +1421,26 @@ struct PDFReaderView: View {
 
             if showQuiz {
                 Divider()
-                QuizPanel(model: quizModel, currentPage: currentPage, totalPages: totalPages)
+                QuizPanel(model: quizModel, currentPage: $currentPage, totalPages: totalPages)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showQuiz)
         .animation(.easeInOut(duration: 0.15), value: host.activeTool == .highlight)
         .onChange(of: host.hasUnsavedChanges) { _, newValue in
             NSApp.keyWindow?.isDocumentEdited = newValue
+        }
+        .onChange(of: quizModel.results.count) { _, _ in
+            if quizModel.phase != .modeSelect { host.hasUnsavedQuizData = true }
+        }
+        .onChange(of: quizModel.notes) { _, _ in
+            if quizModel.phase != .modeSelect { host.hasUnsavedQuizData = true }
+        }
+        .onChange(of: quizModel.flags) { _, _ in
+            if quizModel.phase != .modeSelect { host.hasUnsavedQuizData = true }
+        }
+        .onChange(of: quizModel.phase) { _, newPhase in
+            if newPhase == .modeSelect { host.hasUnsavedQuizData = false }
+            else if newPhase != .modeSelect { host.hasUnsavedQuizData = true }
         }
         .onAppear {
             host.quizModel = quizModel
@@ -1466,9 +1481,15 @@ struct PDFReaderView: View {
                    host.selectedAnnotation != nil {
                     host.deleteSelectedAnnotation(); return nil
                 }
+                // Arrow keys from quiz input → page navigation (left/up = prev, right/down = next)
+                if noMods, quizModel.inputFocused {
+                    let kc = event.keyCode
+                    if kc == 123 || kc == 126 { currentPage = max(0, currentPage - 1); return nil }
+                    if kc == 124 || kc == 125 { currentPage = min(totalPages - 1, currentPage + 1); return nil }
+                }
                 let textIsFocused = (NSApp.keyWindow?.firstResponder is NSText) || quizModel.inputFocused
                 guard noMods, !textIsFocused else { return event }
-                // Arrow keys — page navigation (blocked when any text field is focused)
+                // Arrow keys — page navigation (blocked when any other text field is focused)
                 if event.keyCode == 123 { currentPage = max(0, currentPage - 1); return nil }
                 if event.keyCode == 124 { currentPage = min(totalPages - 1, currentPage + 1); return nil }
                 let key = event.charactersIgnoringModifiers ?? ""
@@ -1983,6 +2004,16 @@ class QuizModel: ObservableObject {
         }
     }
 
+    func fillAndSubmit(_ idx: Int, _ c: Character) {
+        guard idx < targetCount, idx >= current else { return }
+        while current < idx {
+            let correctChar: Character = trackingOnly ? "?" : key[current]
+            results.append(QuizEntry(number: current + 1, given: "?", correct: correctChar))
+            current += 1
+        }
+        submit(c)
+    }
+
     func toggleFlag(_ q: Int) {
         if flags.contains(q) { flags.remove(q) } else { flags.insert(q) }
     }
@@ -2062,7 +2093,7 @@ class QuizModel: ObservableObject {
 
 struct QuizPanel: View {
     @ObservedObject var model: QuizModel
-    let currentPage: Int
+    @Binding var currentPage: Int
     let totalPages: Int
     @State private var showLog   = false
     @State private var showNotes = false
@@ -2073,7 +2104,7 @@ struct QuizPanel: View {
             switch model.phase {
             case .modeSelect: QuizModeSelectView().environmentObject(model)
             case .setup:      QuizSetupView().environmentObject(model)
-            case .active:     QuizActiveView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView, currentPage: currentPage, totalPages: totalPages).environmentObject(model)
+            case .active:     QuizActiveView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView, currentPage: $currentPage, totalPages: totalPages).environmentObject(model)
             case .summary:    QuizSummaryView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView).environmentObject(model)
             }
         }
@@ -2195,7 +2226,7 @@ struct QuizActiveView: View {
     @Binding var showLog: Bool
     @Binding var showNotes: Bool
     @Binding var notesAllView: Bool
-    let currentPage: Int
+    @Binding var currentPage: Int
     let totalPages: Int
     @State private var input = ""
 
@@ -2210,8 +2241,6 @@ struct QuizActiveView: View {
     @State private var lastCorrect: Character? = nil
     @State private var copied = false
     @State private var showAddKey = false
-    @State private var editingIndex: Int? = nil
-    @State private var editInput = ""
     @State private var addKeyText = ""
     @State private var showRestartConfirm = false
     @FocusState private var focused: Bool
@@ -2284,7 +2313,6 @@ struct QuizActiveView: View {
                         .background(Color.qSurface)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(viewingQAnswered ? Color.qAccent.opacity(0.5) : Color.qBorder, lineWidth: 1))
                         .focused($focused)
-                        .disabled(viewingQFuture)
                         .onChange(of: focused) { _, val in model.inputFocused = val }
                         .onChange(of: input) { _, val in
                             if let c = val.uppercased().last(where: { $0.isLetter }) { submitAnswer(c) }
@@ -2349,28 +2377,15 @@ struct QuizActiveView: View {
 
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            showNotes.toggle(); if showNotes { showLog = false }
+                            showLog.toggle(); showNotes = false
                         }
                     } label: {
                         HStack(spacing: 3) {
-                            Text("notes").font(.system(size: 14, weight: .bold))
-                                .foregroundColor(showNotes ? .qAccent : .qSubtext)
-                            Image(systemName: showNotes ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(showNotes ? .qAccent : .qSubtext)
-                        }
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showLog.toggle(); if showLog { showNotes = false }
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text("log").font(.system(size: 14, weight: .bold)).foregroundColor(.qSubtext)
+                            Text("log").font(.system(size: 14, weight: .bold))
+                                .foregroundColor(showLog ? .qAccent : .qSubtext)
                             Image(systemName: showLog ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 11, weight: .bold)).foregroundColor(.qSubtext)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(showLog ? .qAccent : .qSubtext)
                         }
                     }
                     .buttonStyle(.plain)
@@ -2389,7 +2404,7 @@ struct QuizActiveView: View {
                         return s
                     }()
                     Text(centerText)
-                        .font(.system(size: 17, weight: .bold))
+                        .font(.system(size: model.revealFeedback ? 16 : 17, weight: .bold))
                         .foregroundColor(centerActive ? feedbackColor : .qText)
                         .lineLimit(1)
                 }
@@ -2442,27 +2457,10 @@ struct QuizActiveView: View {
             .frame(height: 2)
 
             if showLog {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 1) {
-                            ForEach(model.results) { e in logRow(e).id(e.id) }
-                        }
-                        .padding(8)
-                    }
-                    .frame(height: model.results.count < 6 ? 70 : 110)
-                    .background(Color.qSurface)
-                    .onChange(of: model.results.count) { _, _ in
-                        if let last = model.results.last {
-                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                        }
-                    }
-                }
+                QuizLogPanel(model: model, viewingQ: viewingQ, onSelectQ: { i in
+                    if synced { currentPage = i }
+                })
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
-            if showNotes {
-                NotesPanel(model: model, notesAllView: $notesAllView, currentQ: min(viewingQ, max(0, model.current - 1)))
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .onAppear {
@@ -2475,68 +2473,24 @@ struct QuizActiveView: View {
         .onDisappear { model.inputFocused = false }
     }
 
-    @ViewBuilder private func logRow(_ e: QuizEntry) -> some View {
-        let idx = e.number - 1
-        HStack(spacing: 0) {
-            Button {
-                model.toggleFlag(idx)
-            } label: {
-                Image(systemName: model.flags.contains(idx) ? "flag.fill" : "flag")
-                    .font(.system(size: 9))
-                    .foregroundColor(model.flags.contains(idx) ? .orange : .qSubtext.opacity(0.4))
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 4)
-            Text(String(format: "Q%02d  ", e.number)).foregroundColor(.qSubtext)
-            if model.trackingOnly || !model.revealScore {
-                Text(String(e.given)).foregroundColor(.qText)
-            } else {
-                Text(String(e.given)).foregroundColor(e.ok ? .qGreen : .qRed)
-                if e.ok { Text("  ✓").foregroundColor(.qGreen) }
-                else { Text("  ✗   → ").foregroundColor(.qRed); Text(String(e.correct)).foregroundColor(.qGreen) }
-            }
-        }
-        .font(.system(size: 11, design: .monospaced))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            editInput = ""
-            editingIndex = (editingIndex == idx) ? nil : idx
-        }
-        .popover(isPresented: Binding(
-            get: { editingIndex == idx },
-            set: { if !$0 { editingIndex = nil } }
-        ), arrowEdge: .trailing) {
-            HStack(spacing: 6) {
-                Text("Q\(e.number)").font(.system(size: 12, weight: .semibold)).foregroundColor(.qSubtext)
-                TextField("", text: $editInput)
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(.qText).multilineTextAlignment(.center)
-                    .frame(width: 34).padding(.vertical, 4)
-                    .background(Color.qSurface)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
-                    .onChange(of: editInput) { _, val in
-                        if let c = val.uppercased().last(where: { $0.isLetter }) {
-                            model.changeAnswer(idx, to: c)
-                            feedbackText = model.lastFeedbackText
-                            feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
-                            editingIndex = nil; editInput = ""
-                            DispatchQueue.main.async { focused = true }
-                        } else if !val.isEmpty { editInput = "" }
-                    }
-            }
-            .padding(10).background(Color.qBg).preferredColorScheme(.dark)
-        }
-    }
-
     private func submitAnswer(_ c: Character) {
         input = ""
         if viewingQAnswered {
-            // Editing a previous answer (page sync or log popover)
             model.changeAnswer(viewingQ, to: c)
             lastSubmitted = c
             feedbackText = model.lastFeedbackText
             feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
             lastCorrect = model.results[viewingQ].ok ? nil : model.results[viewingQ].correct
+        } else if viewingQFuture {
+            model.fillAndSubmit(viewingQ, c)
+            lastSubmitted = c
+            if !model.trackingOnly, let last = model.results.last {
+                feedbackText  = last.ok
+                    ? "✓  correct   \(model.score)/\(model.total)  \(String(format: "%.1f", model.pct))%"
+                    : "✗   \(model.score)/\(model.total)  \(String(format: "%.1f", model.pct))%"
+                feedbackColor = last.ok ? .qGreen : .qRed
+                lastCorrect   = last.ok ? nil : last.correct
+            }
         } else {
             model.submit(c); lastSubmitted = c
             if !model.trackingOnly, let last = model.results.last {
@@ -2555,6 +2509,172 @@ struct QuizActiveView: View {
         NSPasteboard.general.setString(model.sheetsText(), forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { copied = false }
+    }
+}
+
+// MARK: Log + Notes Panel
+
+struct QuizLogPanel: View {
+    @ObservedObject var model: QuizModel
+    let viewingQ: Int
+    var onSelectQ: ((Int) -> Void)? = nil
+    @State private var selectedQ: Int = 0
+    @State private var notesAllView = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // ── Left: question list ───────────────────────────────────────
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(0..<model.targetCount, id: \.self) { i in
+                            listRow(i: i).id(i)
+                        }
+                    }
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                }
+                .onAppear {
+                    selectedQ = viewingQ
+                    proxy.scrollTo(viewingQ, anchor: .center)
+                }
+                .onChange(of: viewingQ) { _, q in
+                    selectedQ = q
+                    withAnimation { proxy.scrollTo(q, anchor: .center) }
+                }
+                .onChange(of: model.results.count) { _, _ in
+                    withAnimation { proxy.scrollTo(model.results.count - 1, anchor: .center) }
+                }
+            }
+            .frame(width: 230)
+
+            Divider()
+
+            // ── Right: note editor ────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 0) {
+                    Text(notesAllView ? "all notes" : "Q\(selectedQ + 1) note")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.qSubtext)
+                    Spacer()
+                    HStack(spacing: 0) {
+                        Button { withAnimation { notesAllView = false } } label: {
+                            Text("Q\(selectedQ + 1)")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(!notesAllView ? .qText : .qSubtext)
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                        }.buttonStyle(.plain)
+                        Button { withAnimation { notesAllView = true } } label: {
+                            Text("all")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(notesAllView ? .qText : .qSubtext)
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                        }.buttonStyle(.plain)
+                    }
+                    .background(Color.white.opacity(0.05))
+                    .cornerRadius(4)
+                }
+                .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 2)
+
+                if notesAllView {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 2) {
+                                ForEach(0..<model.targetCount, id: \.self) { i in
+                                    HStack(alignment: .top, spacing: 6) {
+                                        Text(String(format: "Q%02d", i + 1))
+                                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                            .foregroundColor(.qSubtext)
+                                            .frame(width: 32, alignment: .leading)
+                                        TextEditor(text: Binding(
+                                            get: { i < model.notes.count ? model.notes[i] : "" },
+                                            set: { if i < model.notes.count { model.notes[i] = $0 } }
+                                        ))
+                                        .font(.system(size: 11)).foregroundColor(.qText)
+                                        .scrollContentBackground(.hidden).background(Color.clear)
+                                        .frame(minHeight: 18)
+                                    }
+                                    .id(i)
+                                    .padding(.horizontal, 6).padding(.vertical, 1)
+                                }
+                            }
+                            .padding(.bottom, 4)
+                        }
+                        .onAppear { proxy.scrollTo(selectedQ, anchor: .center) }
+                        .onChange(of: selectedQ) { _, q in withAnimation { proxy.scrollTo(q, anchor: .center) } }
+                    }
+                } else {
+                    TextEditor(text: Binding(
+                        get: { selectedQ < model.notes.count ? model.notes[selectedQ] : "" },
+                        set: { if selectedQ < model.notes.count { model.notes[selectedQ] = $0 } }
+                    ))
+                    .font(.system(size: 13)).foregroundColor(.qText)
+                    .scrollContentBackground(.hidden).background(Color.clear)
+                    .padding(.horizontal, 6).padding(.bottom, 4)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .frame(height: notesAllView ? 158 : 108)
+        .background(Color.qSurface)
+    }
+
+    @ViewBuilder private func listRow(i: Int) -> some View {
+        let answered = i < model.results.count
+        let e: QuizEntry? = answered ? model.results[i] : nil
+        let isSelected = i == selectedQ
+        let isViewing  = i == viewingQ
+
+        HStack(spacing: 4) {
+            Button { model.toggleFlag(i) } label: {
+                Image(systemName: model.flags.contains(i) ? "flag.fill" : "flag")
+                    .font(.system(size: 8))
+                    .foregroundColor(model.flags.contains(i) ? .orange : .qSubtext.opacity(0.25))
+            }.buttonStyle(.plain)
+
+            Text(String(format: "Q%02d", i + 1))
+                .font(.system(size: 13, weight: isViewing ? .bold : .regular, design: .monospaced))
+                .foregroundColor(isViewing ? .qText : .qSubtext)
+                .frame(width: 34, alignment: .leading)
+
+            answerText(e: e)
+
+            if i < model.notes.count && !model.notes[i].isEmpty {
+                Text(model.notes[i])
+                    .font(.system(size: 11))
+                    .foregroundColor(.qSubtext.opacity(0.5))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 4).padding(.vertical, 2)
+        .background(isSelected ? Color.white.opacity(0.07) : Color.clear)
+        .cornerRadius(3)
+        .contentShape(Rectangle())
+        .onTapGesture { selectedQ = i; onSelectQ?(i) }
+    }
+
+    @ViewBuilder private func answerText(e: QuizEntry?) -> some View {
+        if let e = e {
+            let isSkip = e.given == "?"
+            if model.trackingOnly || !model.revealFeedback {
+                Text(String(e.given))
+                    .foregroundColor(isSkip ? .qSubtext.opacity(0.3) : .qText)
+                    .frame(width: 18)
+            } else {
+                Text(String(e.given))
+                    .foregroundColor(isSkip ? .qSubtext.opacity(0.3) : (e.ok ? .qGreen : .qRed))
+                    .frame(width: 18)
+                if !isSkip {
+                    Text(e.ok ? "✓" : "✗")
+                        .foregroundColor(e.ok ? .qGreen : .qRed)
+                        .frame(width: 14)
+                }
+            }
+        } else {
+            Text("—").foregroundColor(.qSubtext.opacity(0.3)).frame(width: 18)
+        }
     }
 }
 
@@ -2666,6 +2786,8 @@ struct QuizSummaryView: View {
     @Binding var showNotes: Bool
     @Binding var notesAllView: Bool
     @State private var copied = false
+    @State private var showAddKey = false
+    @State private var addKeyText = ""
     private var missed: [QuizEntry] { model.results.filter { !$0.ok } }
     private var flaggedCount: Int { model.flags.count }
 
@@ -2674,11 +2796,51 @@ struct QuizSummaryView: View {
             HStack(spacing: 10) {
                 Text("Results").font(.system(size: 13, weight: .bold)).foregroundColor(.qText)
 
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text("\(model.score)/\(model.targetCount)")
-                        .font(.system(size: 14, weight: .bold)).foregroundColor(model.scoreColor)
-                    Text("\(String(format: "%.1f", model.pct))%")
-                        .font(.system(size: 12)).foregroundColor(model.scoreColor)
+                if model.trackingOnly {
+                    let addKeyLetters = Array(addKeyText.uppercased().filter { $0.isLetter })
+                    Button { showAddKey.toggle() } label: {
+                        Text("add key")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color(red: 0.54, green: 0.67, blue: 0.86))
+                            .padding(.horizontal, 9).padding(.vertical, 4)
+                            .background(Color(red: 0.165, green: 0.247, blue: 0.373))
+                            .cornerRadius(5)
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showAddKey, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
+                                Spacer()
+                                Text("\(addKeyLetters.count)/\(model.targetCount)").font(.system(size: 11))
+                                    .foregroundColor(addKeyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                            }
+                            TextEditor(text: $addKeyText)
+                                .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                                .scrollContentBackground(.hidden).background(Color.qSurface)
+                                .frame(width: 200, height: 52)
+                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                            Button {
+                                model.addKey(addKeyLetters); showAddKey = false; addKeyText = ""
+                            } label: {
+                                Text("apply key →")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(addKeyLetters.count == model.targetCount ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(addKeyLetters.count == model.targetCount ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
+                                    .cornerRadius(6)
+                            }
+                            .buttonStyle(.plain).disabled(addKeyLetters.count != model.targetCount)
+                        }
+                        .padding(12).background(Color.qBg).preferredColorScheme(.dark)
+                    }
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text("\(model.score)/\(model.targetCount)")
+                            .font(.system(size: 14, weight: .bold)).foregroundColor(model.scoreColor)
+                        Text("\(String(format: "%.1f", model.pct))%")
+                            .font(.system(size: 12)).foregroundColor(model.scoreColor)
+                    }
                 }
 
                 Text(missed.isEmpty ? "· perfect!" : "· \(missed.count) missed")
@@ -2692,22 +2854,50 @@ struct QuizSummaryView: View {
                     }
                 }
 
+                if !model.trackingOnly {
+                    Button { model.revealScore.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: model.revealScore ? "eye.fill" : "eye.slash.fill")
+                            Text(model.revealScore ? "score on" : "score off")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(model.revealScore ? .qAccent : .qText)
+                    .padding(.horizontal, 7).padding(.vertical, 4)
+                    .background(Color(white: 0.22)).cornerRadius(5)
+                    .help(model.revealScore ? "Hide score" : "Show score")
+
+                    Button { model.revealFeedback.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: model.revealFeedback ? "checkmark.circle.fill" : "checkmark.circle")
+                            Text(model.revealFeedback ? "feedback on" : "feedback off")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(model.revealFeedback ? .qGreen : .qText)
+                    .padding(.horizontal, 7).padding(.vertical, 4)
+                    .background(Color(white: 0.22)).cornerRadius(5)
+                    .help(model.revealFeedback ? "Hide feedback" : "Show feedback")
+                }
+
                 Spacer()
 
                 Button("undo") { model.undo() }
-                    .buttonStyle(.plain).font(.system(size: 11))
-                    .foregroundColor(.qSubtext)
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.qText)
                     .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Color.qCard).cornerRadius(5)
+                    .background(Color(white: 0.22)).cornerRadius(5)
 
                 qBtn("new quiz", accent: true) { model.newQuiz() }
                 qBtn("retry") { model.retry() }
 
                 Button(copied ? "copied!" : "copy") { copySheet() }
-                    .buttonStyle(.plain).font(.system(size: 11))
-                    .foregroundColor(copied ? .qGreen : .qSubtext)
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium))
+                    .foregroundColor(copied ? .qGreen : .qText)
                     .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Color.qCard).cornerRadius(5)
+                    .background(Color(white: 0.22)).cornerRadius(5)
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -2717,7 +2907,7 @@ struct QuizSummaryView: View {
                 } label: {
                     Image(systemName: "note.text").font(.system(size: 12))
                 }
-                .buttonStyle(.plain).foregroundColor(showNotes ? .qAccent : .qSubtext)
+                .buttonStyle(.plain).foregroundColor(showNotes ? .qAccent : .qText)
                 .help("Notes")
 
                 if !missed.isEmpty {
@@ -2728,9 +2918,9 @@ struct QuizSummaryView: View {
                         }
                     } label: {
                         HStack(spacing: 3) {
-                            Text("missed").font(.system(size: 11)).foregroundColor(.qSubtext)
+                            Text("missed").font(.system(size: 11, weight: .medium)).foregroundColor(.qText)
                             Image(systemName: showLog ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 9)).foregroundColor(.qSubtext)
+                                .font(.system(size: 9)).foregroundColor(.qText)
                         }
                     }
                     .buttonStyle(.plain)
@@ -2768,10 +2958,10 @@ struct QuizSummaryView: View {
     @ViewBuilder private func qBtn(_ label: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 11, weight: accent ? .bold : .regular))
-                .foregroundColor(accent ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(accent ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qText)
                 .padding(.horizontal, 9).padding(.vertical, 5)
-                .background(accent ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qCard)
+                .background(accent ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color(white: 0.22))
                 .cornerRadius(5)
         }
         .buttonStyle(.plain)
