@@ -1511,6 +1511,74 @@ private struct TimerPopoverView: View {
     }
 }
 
+// MARK: - Spreadsheet Settings
+
+private struct SpreadsheetSettingsView: View {
+    @AppStorage("ss_includeHeaders") private var includeHeaders = false
+    @AppStorage("ss_columnOrder")   private var columnOrderStr = "given,correct,notes"
+
+    private static let labels = ["given": "My Answer", "correct": "Correct Answer", "notes": "Notes"]
+
+    private var cols: [String] { columnOrderStr.components(separatedBy: ",") }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Spreadsheet Export")
+                .font(.system(size: 13, weight: .bold))
+                .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+
+            Divider()
+
+            Toggle("Include column headers", isOn: $includeHeaders)
+                .font(.system(size: 12))
+                .toggleStyle(.switch)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Column order")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 2)
+
+                ForEach(Array(cols.enumerated()), id: \.element) { idx, col in
+                    HStack(spacing: 8) {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(Self.labels[col] ?? col)
+                            .font(.system(size: 12))
+                        Spacer()
+                        VStack(spacing: 1) {
+                            Button { move(from: idx, by: -1) } label: {
+                                Image(systemName: "chevron.up").font(.system(size: 9, weight: .semibold))
+                            }
+                            .buttonStyle(.plain).disabled(idx == 0)
+                            Button { move(from: idx, by: 1) } label: {
+                                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                            }
+                            .buttonStyle(.plain).disabled(idx == cols.count - 1)
+                        }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.25))
+                    .cornerRadius(5)
+                    .padding(.horizontal, 10)
+                }
+            }
+            .padding(.bottom, 12)
+        }
+        .frame(width: 230)
+    }
+
+    private func move(from idx: Int, by delta: Int) {
+        var c = cols; let newIdx = idx + delta
+        guard newIdx >= 0 && newIdx < c.count else { return }
+        c.swapAt(idx, newIdx)
+        columnOrderStr = c.joined(separator: ",")
+    }
+}
+
 // MARK: - Root
 
 struct DocEntry: Identifiable {
@@ -1718,6 +1786,7 @@ struct PDFReaderView: View {
     @State private var quizDataRestored = false
     @State private var showTimerPopover = false
     @State private var timerNudgeDone = false
+    @State private var showSpreadsheetSettings = false
     @EnvironmentObject var appDelegate: AppDelegate
     @Environment(\.colorScheme) var colorScheme
 
@@ -1978,6 +2047,16 @@ struct PDFReaderView: View {
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!host.hasUnsavedChanges && !host.hasUnsavedQuizData && !savedFeedback)
                 .help("Save (⌘S)")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button { showSpreadsheetSettings.toggle() } label: {
+                    Image(systemName: "gearshape")
+                }
+                .foregroundStyle(showSpreadsheetSettings ? Color.accentColor : Color.primary)
+                .help("Spreadsheet export settings")
+                .popover(isPresented: $showSpreadsheetSettings, arrowEdge: .bottom) {
+                    SpreadsheetSettingsView().preferredColorScheme(.dark)
+                }
             }
             ToolbarItem(placement: .automatic) {
                 TimerToolbarItem(model: timerModel, isPresented: $showTimerPopover, quizIsActive: quizModel.phase == .active)
@@ -2620,19 +2699,46 @@ class QuizModel: ObservableObject {
     }
 
     func sheetsText() -> String {
+        let ud = UserDefaults.standard
+        let orderStr = ud.string(forKey: "ss_columnOrder") ?? "given,correct,notes"
+        let includeHeaders = ud.bool(forKey: "ss_includeHeaders")
         let hasNotes = notes.contains { !$0.isEmpty }
-        return (0..<targetCount).map { i in
+
+        // Filter to applicable columns
+        let allCols = orderStr.components(separatedBy: ",")
+        let cols = allCols.filter { col in
+            if col == "correct" && trackingOnly { return false }
+            if col == "notes"   && !hasNotes    { return false }
+            return true
+        }
+
+        var lines: [String] = []
+        if includeHeaders {
+            lines.append(cols.map { col -> String in
+                switch col {
+                case "given":   return "My Answer"
+                case "correct": return "Correct Answer"
+                case "notes":   return "Notes"
+                default:        return col
+                }
+            }.joined(separator: "\t"))
+        }
+
+        for i in 0..<targetCount {
             let e = results.first(where: { $0.number - 1 == i })
             let given   = e.map { String($0.given) }   ?? "-"
             let correct = e.map { String($0.correct) } ?? ""
             let rawNote = notes.indices.contains(i) ? notes[i] : ""
-            let note    = tsvField(rawNote)
-            if trackingOnly {
-                return hasNotes ? "\(given)\t\(note)" : given
-            } else {
-                return hasNotes ? "\(given)\t\(correct)\t\(note)" : "\(given)\t\(correct)"
-            }
-        }.joined(separator: "\n")
+            lines.append(cols.map { col -> String in
+                switch col {
+                case "given":   return given
+                case "correct": return correct
+                case "notes":   return tsvField(rawNote)
+                default:        return ""
+                }
+            }.joined(separator: "\t"))
+        }
+        return lines.joined(separator: "\n")
     }
 
     // Wraps a field in double-quotes if it contains newlines, tabs, or quotes,
