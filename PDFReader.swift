@@ -2019,11 +2019,13 @@ class QuizModel: ObservableObject {
     var total: Int { results.count }
     var pct: Double { total == 0 ? 0 : Double(score) / Double(total) * 100 }
     var scoreColor: Color { pct >= 70 ? .qGreen : pct >= 50 ? .qYellow : .qRed }
+    var finalPct: Double { targetCount == 0 ? 0 : Double(score) / Double(targetCount) * 100 }
+    var finalScoreColor: Color { finalPct >= 70 ? .qGreen : finalPct >= 50 ? .qYellow : .qRed }
 
     func start(keyLetters: [Character], doneLetters: [Character]) {
         key = keyLetters
-        results = doneLetters.enumerated().map {
-            QuizEntry(number: $0.offset + 1, given: $0.element, correct: keyLetters[$0.offset])
+        results = doneLetters.enumerated().compactMap { (i, c) in
+            c == "-" ? nil : QuizEntry(number: i + 1, given: c, correct: keyLetters[i])
         }
         current = doneLetters.count
         if let last = results.last {
@@ -2043,26 +2045,35 @@ class QuizModel: ObservableObject {
         notes = Array(repeating: "", count: targetCount)
         flags = []
         for (i, c) in doneLetters.prefix(targetCount).enumerated() {
-            results.append(QuizEntry(number: i + 1, given: c, correct: "?"))
+            if c != "-" { results.append(QuizEntry(number: i + 1, given: c, correct: "?")) }
             current = i + 1
         }
         phase = current >= targetCount ? .summary : .active
     }
 
+    // letters[i]: letter = set answer for Q(i+1), '-' = clear/skip Q(i+1)
     func addPastAnswers(_ letters: [Character]) {
         for (i, c) in letters.prefix(targetCount).enumerated() {
-            let correctChar: Character = trackingOnly ? "?" : (i < key.count ? key[i] : "?")
-            let entry = QuizEntry(number: i + 1, given: c, correct: correctChar)
-            if let idx = results.firstIndex(where: { $0.number == i + 1 }) {
-                results[idx] = entry
-            } else if let insertPos = results.firstIndex(where: { $0.number > i + 1 }) {
-                results.insert(entry, at: insertPos)
+            if c == "-" {
+                results.removeAll { $0.number == i + 1 }
             } else {
-                results.append(entry)
+                let correctChar: Character = trackingOnly ? "?" : (i < key.count ? key[i] : "?")
+                let entry = QuizEntry(number: i + 1, given: c, correct: correctChar)
+                if let idx = results.firstIndex(where: { $0.number == i + 1 }) {
+                    results[idx] = entry
+                } else if let insertPos = results.firstIndex(where: { $0.number > i + 1 }) {
+                    results.insert(entry, at: insertPos)
+                } else {
+                    results.append(entry)
+                }
             }
         }
-        current = max(current, letters.count)
-        if !trackingOnly, let last = results.last {
+        // advance current to last answered (non-skip) position
+        let trimmed = Array(letters.prefix(targetCount).enumerated())
+        if let lastIdx = trimmed.last(where: { $0.element != "-" })?.offset {
+            current = max(current, lastIdx + 1)
+        }
+        if !trackingOnly, let last = results.sorted(by: { $0.number < $1.number }).last {
             lastFeedbackText = last.ok
                 ? "✓  correct   \(score)/\(total)  \(String(format: "%.1f", pct))%"
                 : "✗   \(score)/\(total)  \(String(format: "%.1f", pct))%"
@@ -2150,11 +2161,7 @@ class QuizModel: ObservableObject {
 
     func fillAndSubmit(_ idx: Int, _ c: Character) {
         guard idx < targetCount, idx >= current else { return }
-        while current < idx {
-            let correctChar: Character = trackingOnly ? "?" : key[current]
-            results.append(QuizEntry(number: current + 1, given: "?", correct: correctChar))
-            current += 1
-        }
+        current = idx
         submit(c)
     }
 
@@ -2170,12 +2177,16 @@ class QuizModel: ObservableObject {
     }
 
     func sheetsText() -> String {
-        let hasNotes = notes.prefix(results.count).contains { !$0.isEmpty }
-        return results.enumerated().map { i, e in
+        let hasNotes = notes.contains { !$0.isEmpty }
+        return (0..<targetCount).map { i in
+            let e = results.first(where: { $0.number - 1 == i })
+            let given   = e.map { String($0.given) }   ?? "-"
+            let correct = e.map { String($0.correct) } ?? ""
+            let note    = notes.indices.contains(i) ? notes[i] : ""
             if trackingOnly {
-                return hasNotes ? "\(String(e.given))\t\t\(notes[i])" : String(e.given)
+                return hasNotes ? "\(given)\t\(note)" : given
             } else {
-                return hasNotes ? "\(String(e.given))\t\(String(e.correct))\t\(notes[i])" : "\(String(e.given))\t\(String(e.correct))"
+                return hasNotes ? "\(given)\t\(correct)\t\(note)" : "\(given)\t\(correct)"
             }
         }.joined(separator: "\n")
     }
@@ -2252,8 +2263,7 @@ struct QuizPanel: View {
             switch model.phase {
             case .modeSelect: QuizModeSelectView().environmentObject(model)
             case .setup:      QuizSetupView().environmentObject(model)
-            case .active:     QuizActiveView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView, currentPage: $currentPage, totalPages: totalPages).environmentObject(model)
-            case .preSubmit:  QuizPreSubmitView().environmentObject(model)
+            case .active, .preSubmit: QuizActiveView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView, currentPage: $currentPage, totalPages: totalPages).environmentObject(model)
             case .summary:    QuizSummaryView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView).environmentObject(model)
             }
         }
@@ -2292,7 +2302,7 @@ struct QuizModeSelectView: View {
                 Text(title).font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
                 Text(subtitle).font(.system(size: 11)).foregroundColor(.qSubtext)
             }
-            .frame(width: 220, alignment: .leading)
+            .frame(width: 400, alignment: .leading)
             .padding(10)
             .background(Color.qSurface)
             .cornerRadius(6)
@@ -2308,7 +2318,7 @@ struct QuizSetupView: View {
     @State private var doneText = ""
 
     private var keyLetters:  [Character] { Array(keyText.uppercased().filter  { $0.isLetter }) }
-    private var doneLetters: [Character] { Array(doneText.uppercased().filter { $0.isLetter }) }
+    private var doneLetters: [Character] { Array(doneText.uppercased().filter { $0.isLetter || $0 == "-" }) }
     private var ready: Bool {
         if model.trackingOnly { return doneLetters.count <= model.targetCount }
         return keyLetters.count == model.targetCount && doneLetters.count <= model.targetCount
@@ -2318,41 +2328,48 @@ struct QuizSetupView: View {
         HStack(spacing: 0) {
             Spacer()
             HStack(alignment: .top, spacing: 12) {
-                // Back arrow
-                Button { model.trackingOnly = false; model.phase = .modeSelect } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.qSubtext)
+                // Back button
+                VStack {
+                    Spacer()
+                    Button { model.trackingOnly = false; model.phase = .modeSelect } label: {
+                        Text("← Back")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.qText)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(Color.qBorder)
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 22)
+                .frame(height: 68)
 
                 // Answer key (hidden in tracking mode)
                 if !model.trackingOnly {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
-                            Text("Answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
+                            Text("Answer key").font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
                             Spacer()
                             Text("\(keyLetters.count)/\(model.targetCount)").font(.system(size: 11))
                                 .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
                         }
-                        qTextArea($keyText)
+                        qTextArea($keyText, placeholder: "\"ABCDABDCBACDBDACABDCBDACABDCBDACABDCBDACABDCBDACB\"")
                     }
-                    .frame(width: 180)
+                    .frame(width: 400)
                 }
 
                 // Already done
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
-                        Text("Already done (opt.)").font(.system(size: 11)).foregroundColor(.qSubtext)
+                        Text("Input any answers to q's you already did (optional)").font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
                         Spacer()
                         let n = doneLetters.count
                         let tgt = model.targetCount
                         Text(n > tgt ? "max \(tgt)" : n == 0 ? "→Q1" : "→Q\(n+1)").font(.system(size: 11))
                             .foregroundColor(n > tgt ? .qRed : .qSubtext)
                     }
-                    qTextArea($doneText)
+                    qTextArea($doneText, placeholder: "\"ABCDABDCBACDBDACABDC\"")
                 }
-                .frame(width: 180)
+                .frame(width: 400)
 
                 // Start
                 VStack {
@@ -2380,12 +2397,22 @@ struct QuizSetupView: View {
         }
     }
 
-    @ViewBuilder private func qTextArea(_ b: Binding<String>) -> some View {
-        TextEditor(text: b)
-            .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
-            .scrollContentBackground(.hidden).background(Color.qSurface)
-            .frame(height: 52)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+    @ViewBuilder private func qTextArea(_ b: Binding<String>, placeholder: String = "") -> some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: b)
+                .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                .scrollContentBackground(.hidden).background(Color.qSurface)
+                .frame(height: 52)
+            if b.wrappedValue.isEmpty && !placeholder.isEmpty {
+                Text(placeholder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.qSubtext.opacity(0.65))
+                    .padding(.top, 8).padding(.leading, 5)
+                    .allowsHitTesting(false)
+            }
+        }
+        .background(Color.qSurface)
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
     }
 }
 
@@ -2414,77 +2441,148 @@ struct QuizActiveView: View {
     @State private var suppressSubmit = false
     @State private var showQInfo = false
     @State private var showCopyInfo = false
-    @State private var copyHoverEnabled = true
+    @State private var copyHoverEnabled = false
     @State private var copied = false
     @State private var keyCopied = false
     @State private var showAddKey = false
     @State private var addKeyText = ""
-    @State private var showRestartConfirm = false
-    @State private var showPastAnswers = false
+    @State private var showTools = false
+    @State private var toolsRestartConfirm = false
     @State private var pastAnswersText = ""
     @FocusState private var focused: Bool
 
-    @ViewBuilder private var restartButton: some View {
-        Button { showRestartConfirm = true } label: {
-            Text("restart").font(.system(size: 14, weight: .bold)).foregroundColor(model.postQuiz ? .qRed : .qSubtext)
+    @ViewBuilder private var toolsButton: some View {
+        Button { showTools.toggle() } label: {
+            HStack(spacing: 3) {
+                Text("tools").font(.system(size: 14, weight: .bold)).foregroundColor(.qSubtext)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundColor(.qSubtext)
+            }
         }
         .buttonStyle(.plain)
-        .popover(isPresented: $showRestartConfirm, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("start a new quiz?")
-                    .font(.system(size: 15, weight: .semibold)).foregroundColor(.qText)
-                Text("all answers and notes will be cleared.")
-                    .font(.system(size: 13)).foregroundColor(.qSubtext)
-                HStack(spacing: 14) {
-                    Button("cancel") { showRestartConfirm = false }
-                        .buttonStyle(.plain).font(.system(size: 14)).foregroundColor(.qSubtext)
-                    Button("restart") { model.newQuiz(); showRestartConfirm = false }
-                        .buttonStyle(.plain).font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.qRed)
+        .onChange(of: showTools) { _, isOpen in
+            if isOpen {
+                toolsRestartConfirm = false
+                let depth = max(model.current, model.results.map(\.number).max() ?? 0)
+                pastAnswersText = (0..<depth).map { i in
+                    model.results.first(where: { $0.number - 1 == i }).map { String($0.given).uppercased() } ?? "-"
+                }.joined()
+            }
+        }
+        .popover(isPresented: $showTools, arrowEdge: .bottom) {
+            Group {
+                if toolsRestartConfirm {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("start a new quiz?").font(.system(size: 14, weight: .semibold)).foregroundColor(.qText)
+                        Text("all answers and notes will be cleared.").font(.system(size: 12)).foregroundColor(.qSubtext)
+                        HStack(spacing: 14) {
+                            Button("cancel") { toolsRestartConfirm = false }
+                                .buttonStyle(.plain).font(.system(size: 13)).foregroundColor(.qSubtext)
+                            Button("restart") { model.newQuiz(); showTools = false; toolsRestartConfirm = false }
+                                .buttonStyle(.plain).font(.system(size: 13, weight: .bold)).foregroundColor(.qRed)
+                        }
+                    }
+                    .padding(14)
+                } else {
+                    let pastEntries = Array(pastAnswersText.uppercased().filter { $0.isLetter || $0 == "-" })
+                    let pastLetterCount = pastEntries.filter { $0 != "-" }.count
+                    VStack(alignment: .leading, spacing: 12) {
+                        // — Bulk edit —
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Edit my current answers").font(.system(size: 13, weight: .bold)).foregroundColor(.qText)
+                                Spacer()
+                                let n = pastEntries.count
+                                let tgt = model.targetCount
+                                Text(n > tgt ? "max \(tgt)" : n == 0 ? "→Q1" : "→Q\(n+1)").font(.system(size: 11))
+                                    .foregroundColor(n > tgt ? .qRed : .qSubtext)
+                            }
+                            TextEditor(text: $pastAnswersText)
+                                .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                                .scrollContentBackground(.hidden).background(Color.qSurface)
+                                .frame(width: 220, height: 54)
+                                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                            let canApply = pastLetterCount > 0 && pastEntries.count <= model.targetCount
+                            Button {
+                                model.addPastAnswers(pastEntries); showTools = false; pastAnswersText = ""
+                            } label: {
+                                Text("apply →")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(canApply ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
+                            }
+                            .buttonStyle(.plain).disabled(!canApply)
+                        }
+
+                        Divider()
+
+                        // — Copy answer key —
+                        if !model.trackingOnly && !model.key.isEmpty {
+                            Button { copyKey(); showTools = false } label: {
+                                Text(keyCopied ? "✓ answer key copied" : "copy answer key")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(keyCopied ? .qGreen : .qText)
+                            }
+                            .buttonStyle(.plain)
+
+                            Divider()
+                        }
+
+                        // — Restart —
+                        Button { toolsRestartConfirm = true } label: {
+                            Text("restart quiz")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.qRed)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(14)
                 }
             }
-            .padding(16).background(Color.qBg).preferredColorScheme(.dark)
+            .background(Color.qBg).preferredColorScheme(.dark)
         }
     }
 
-    @ViewBuilder private var editAnsweredButton: some View {
-        let pastLetters = Array(pastAnswersText.uppercased().filter { $0.isLetter })
-        Button { showPastAnswers.toggle() } label: {
-            Text("add past answers").font(.system(size: 14, weight: .bold)).foregroundColor(.qSubtext)
-        }
-        .buttonStyle(.plain)
-        .popover(isPresented: $showPastAnswers, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("past answers").font(.system(size: 11)).foregroundColor(.qSubtext)
-                    Spacer()
-                    let n = pastLetters.count
-                    let tgt = model.targetCount
-                    Text(n > tgt ? "max \(tgt)" : n == 0 ? "→Q1" : "→Q\(n+1)")
-                        .font(.system(size: 11))
-                        .foregroundColor(n > tgt ? .qRed : .qSubtext)
+    @ViewBuilder private var preSubmitLogPanel: some View {
+        let answeredSet = Set(model.results.map { $0.number })
+        let missingQs = (1...model.targetCount).filter { !answeredSet.contains($0) }
+        VStack(spacing: 14) {
+            VStack(spacing: 6) {
+                Text(missingQs.isEmpty ? "All \(model.targetCount) answered ✓" : "\(model.results.count) / \(model.targetCount) answered")
+                    .font(.system(size: 17, weight: .bold)).foregroundColor(.qText)
+                if !missingQs.isEmpty {
+                    Text("Missing: \(missingQs.prefix(10).map { "Q\($0)" }.joined(separator: ", "))\(missingQs.count > 10 ? " +\(missingQs.count - 10) more" : "")")
+                        .font(.system(size: 12)).foregroundColor(.qSubtext)
+                        .multilineTextAlignment(.center)
                 }
-                TextEditor(text: $pastAnswersText)
-                    .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
-                    .scrollContentBackground(.hidden).background(Color.qSurface)
-                    .frame(width: 200, height: 52)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
-                let canApply = pastLetters.count > 0 && pastLetters.count <= model.targetCount
-                Button {
-                    model.addPastAnswers(pastLetters)
-                    showPastAnswers = false; pastAnswersText = ""
-                } label: {
-                    Text("apply →")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(canApply ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(canApply ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
-                        .cornerRadius(6)
-                }
-                .buttonStyle(.plain).disabled(!canApply)
             }
-            .padding(12).background(Color.qBg).preferredColorScheme(.dark)
+            HStack(spacing: 10) {
+                if !missingQs.isEmpty {
+                    Button { model.phase = .active } label: {
+                        Text("← go back").font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Color(red: 0.28, green: 0.32, blue: 0.40))
+                            .cornerRadius(6)
+                    }.buttonStyle(.plain)
+                }
+                Button {
+                    model.phase = .summary; model.revealScore = true; model.revealFeedback = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.circle").font(.system(size: 11, weight: .semibold))
+                        Text("submit quiz").font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundColor(Color(red: 0.88, green: 1.0, blue: 0.90))
+                    .padding(.horizontal, 16).padding(.vertical, 7)
+                    .background(Color(red: 0.10, green: 0.38, blue: 0.14)).cornerRadius(7)
+                }.buttonStyle(.plain)
+            }
+            Text("Tip: hover the ⓘ left of Q# any time to check missing answers.")
+                .font(.system(size: 13)).foregroundColor(.qText)
+                .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity)
+        .frame(height: 180)
+        .padding(.horizontal, 16)
+        .background(Color.qBg)
     }
 
     private func feedbackColorFor(_ correct: Bool?) -> Color {
@@ -2590,7 +2688,7 @@ struct QuizActiveView: View {
                     Button("undo") {
                         model.postQuiz = false
                         model.undo()
-                        currentPage = max(0, model.current)
+                        syncInput(viewingQ)
                         feedbackText = model.lastFeedbackText
                         feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
                         lastSubmitted = nil; lastCorrect = nil
@@ -2635,25 +2733,27 @@ struct QuizActiveView: View {
                             }
                             .padding(12).background(Color.qBg).preferredColorScheme(.dark)
                         }
-                        restartButton
-                        editAnsweredButton
+                        toolsButton
                     } else {
-                        restartButton
-                        editAnsweredButton
+                        toolsButton
                     }
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showLog.toggle(); showNotes = false
+                        if model.phase == .preSubmit {
+                            model.phase = .active
+                        } else {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showLog.toggle(); showNotes = false
+                            }
                         }
-                        if showLog { copyHoverEnabled = false }
                     } label: {
+                        let isPreSubmit = model.phase == .preSubmit
                         HStack(spacing: 5) {
-                            Text("log/notes").font(.system(size: 14, weight: .bold))
-                                .foregroundColor(showLog ? .qAccent : .qSubtext)
-                            Image(systemName: "list.clipboard.fill")
+                            Text(isPreSubmit ? "dismiss" : "log/notes").font(.system(size: 14, weight: .bold))
+                                .foregroundColor(isPreSubmit ? .qAccent : (showLog ? .qAccent : .qSubtext))
+                            Image(systemName: isPreSubmit ? "xmark" : "list.clipboard.fill")
                                 .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(showLog ? .qAccent : .qSubtext)
+                                .foregroundColor(isPreSubmit ? .qAccent : (showLog ? .qAccent : .qSubtext))
                         }
                     }
                     .buttonStyle(.plain)
@@ -2683,7 +2783,7 @@ struct QuizActiveView: View {
                     .buttonStyle(.plain)
                     .onHover { h in
                         if h { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if !copied && copyHoverEnabled { showCopyInfo = true } } }
-                        else { showCopyInfo = false; copyHoverEnabled = true }
+                        else { showCopyInfo = false }
                     }
                     .popover(isPresented: $showCopyInfo, arrowEdge: .bottom) {
                         Text("Pastes your answers, correct answers, and notes\ninto 3 columns on Google Sheets / Excel")
@@ -2730,7 +2830,7 @@ struct QuizActiveView: View {
                         .foregroundColor(copied ? .qGreen : .qSubtext)
                         .onHover { h in
                             if h { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if !copied && copyHoverEnabled { showCopyInfo = true } } }
-                            else { showCopyInfo = false; copyHoverEnabled = true }
+                            else { showCopyInfo = false }
                         }
                         .popover(isPresented: $showCopyInfo, arrowEdge: .bottom) {
                             Text("Pastes your answers, correct answers, and notes\ninto 3 columns on Google Sheets / Excel")
@@ -2739,14 +2839,6 @@ struct QuizActiveView: View {
                                 .background(Color.qBg).preferredColorScheme(.dark)
                         }
 
-                        if !model.trackingOnly && !model.key.isEmpty {
-                            Button { copyKey() } label: {
-                                Text(keyCopied ? "copied!" : "copy answer key")
-                                    .font(.system(size: 14, weight: .bold))
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundColor(keyCopied ? .qGreen : .qSubtext)
-                        }
                     }
 
                     if !model.trackingOnly {
@@ -2791,7 +2883,9 @@ struct QuizActiveView: View {
             }
             .frame(height: 2)
 
-            if showLog {
+            if model.phase == .preSubmit {
+                preSubmitLogPanel
+            } else if showLog {
                 QuizLogPanel(model: model, viewingQ: viewingQ, onSelectQ: { i in
                     if synced { currentPage = i }
                 }, notesAllView: $notesAllView)
@@ -2800,6 +2894,9 @@ struct QuizActiveView: View {
         }
         .onAppear {
             focused = true
+            showCopyInfo = false
+            copyHoverEnabled = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60.0) { copyHoverEnabled = true }
             if !model.lastFeedbackText.isEmpty {
                 feedbackText = model.lastFeedbackText
                 feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
@@ -3008,7 +3105,7 @@ struct QuizLogPanel: View {
             if i < model.notes.count && !model.notes[i].isEmpty {
                 Text(model.notes[i])
                     .font(.system(size: 11))
-                    .foregroundColor(.qSubtext.opacity(0.5))
+                    .foregroundColor(.qSubtext.opacity(0.65))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -3240,12 +3337,12 @@ struct QuizSummaryView: View {
                     if !model.trackingOnly {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("\(model.score)/\(model.targetCount)")
-                                .font(.system(size: 30, weight: .bold)).foregroundColor(model.scoreColor)
-                            Text("(\(String(format: "%.1f", model.pct))%)")
-                                .font(.system(size: 30, weight: .bold)).foregroundColor(model.scoreColor)
+                                .font(.system(size: 30, weight: .bold)).foregroundColor(model.finalScoreColor)
+                            Text("(\(String(format: "%.1f", model.finalPct))%)")
+                                .font(.system(size: 30, weight: .bold)).foregroundColor(model.finalScoreColor)
                         }
-                        Text(missed.isEmpty ? "Perfect score! 🎉" : "\(missed.count) question\(missed.count == 1 ? "" : "s") missed")
-                            .font(.system(size: 13)).foregroundColor(missed.isEmpty ? .qGreen : .qSubtext)
+                        Text(model.score == model.targetCount ? "Perfect score! 🎉" : "\(missed.count) wrong\(model.total < model.targetCount ? ", \(model.targetCount - model.total) unanswered" : "")")
+                            .font(.system(size: 13)).foregroundColor(model.score == model.targetCount ? .qGreen : .qSubtext)
                             .padding(.top, 4)
                     } else {
                         addKeySection
@@ -3297,17 +3394,6 @@ struct QuizSummaryView: View {
                                 .background(Color.qBg).preferredColorScheme(.dark)
                         }
 
-                        if !model.trackingOnly && !model.key.isEmpty {
-                            Button { copyKey() } label: {
-                                Text(keyCopied ? "copied!" : "copy answer key")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(keyCopied ? .qGreen : .qSubtext)
-                                    .padding(.horizontal, 14).padding(.vertical, 8)
-                                    .background(Color.qBorder)
-                                    .cornerRadius(7)
-                            }
-                            .buttonStyle(.plain)
-                        }
                     }
                     Spacer(minLength: 22)
                 }
@@ -3316,64 +3402,45 @@ struct QuizSummaryView: View {
                 .background(Color.qSurface)
             } else {
                 // ── State 1: Quiz complete ────────────────────────────────────
-                VStack(spacing: 20) {
+                VStack(spacing: 16) {
                     HStack(spacing: 10) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.qGreen).font(.system(size: 24))
                         Text("Quiz complete!")
                             .font(.system(size: 22, weight: .bold)).foregroundColor(.qText)
                     }
-                    HStack(spacing: 12) {
-                        // undo — leftmost, mustard yellow
-                        Button { model.undo() } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "arrow.uturn.backward").font(.system(size: 11))
-                                Text("undo").font(.system(size: 13, weight: .semibold))
-                            }
-                            .foregroundColor(Color(red: 0.95, green: 0.78, blue: 0.25))
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(Color(red: 0.28, green: 0.23, blue: 0.07))
-                            .cornerRadius(7)
+                    // see results — centered green pill
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) { showResults = true }
+                        model.revealScore = true; model.revealFeedback = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("see results!").font(.system(size: 16, weight: .bold))
+                            Text("🎉").font(.system(size: 16))
                         }
-                        .buttonStyle(.plain)
-                        .disabled(model.results.isEmpty)
-                        .opacity(model.results.isEmpty ? 0.4 : 1)
-
-                        // see results — green
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.18)) { showResults = true }
-                            model.revealScore = true; model.revealFeedback = true
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: "exclamationmark.circle").font(.system(size: 11))
-                                Text("see results").font(.system(size: 13, weight: .semibold))
-                            }
-                            .foregroundColor(Color(red: 0.88, green: 1.0, blue: 0.90))
-                            .padding(.horizontal, 16).padding(.vertical, 8)
-                            .background(Color(red: 0.10, green: 0.38, blue: 0.14))
-                            .cornerRadius(7)
-                        }
-                        .buttonStyle(.plain)
-
-                        // return to log — gray, white text
-                        Button {
-                            model.postQuiz = true
-                            model.phase = .active
-                            showLog = true
-                            notesAllView = true
-                        } label: {
-                            Text("return to log")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 16).padding(.vertical, 8)
-                                .background(Color(white: 0.22))
-                                .cornerRadius(7)
-                        }
-                        .buttonStyle(.plain)
+                        .foregroundColor(Color(red: 0.88, green: 1.0, blue: 0.90))
+                        .padding(.horizontal, 28).padding(.vertical, 11)
+                        .background(Color(red: 0.10, green: 0.38, blue: 0.14))
+                        .cornerRadius(9)
                     }
+                    .buttonStyle(.plain)
+
+                    // return to log without score — plain bold text
+                    Button {
+                        model.postQuiz = true
+                        model.phase = .active
+                        showLog = true
+                        notesAllView = true
+                    } label: {
+                        Text("return to log without score")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.qSubtext)
+                            .underline()
+                    }
+                    .buttonStyle(.plain)
                 }
                 .frame(maxWidth: .infinity)
-                .frame(height: 160)
+                .frame(height: 180)
                 .background(Color.qSurface)
             }
         }
