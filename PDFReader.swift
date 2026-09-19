@@ -1907,6 +1907,7 @@ struct PDFReaderView: View {
                     .foregroundStyle(Color(red: 0.88, green: 0.95, blue: 1.0))
                     .padding(.horizontal, 20).padding(.vertical, 6)
                     .background(showQuiz ? bgActive : bgIdle)
+                    .animation(.easeInOut(duration: 0.2), value: showQuiz)
                     .cornerRadius(6)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.25), lineWidth: 1))
                 }
@@ -3384,19 +3385,14 @@ struct QuizActiveView: View {
                         Button { copySheet() } label: {
                             HStack(spacing: 5) {
                                 Text(copied ? "copied!" : "copy to spreadsheet")
-                                    .font(.system(size: 13, weight: .semibold))
-                                if !copied {
-                                    Image(systemName: "info.circle")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(Color(red: 0.18, green: 0.55, blue: 0.20))
-                                }
+                                    .font(.system(size: 14, weight: .bold))
+                                Image(systemName: "info.circle")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.qSubtext.opacity(0.6))
                             }
-                            .foregroundColor(copied ? .qGreen : Color(red: 0.88, green: 1.0, blue: 0.90))
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(copied ? Color(red: 0.06, green: 0.22, blue: 0.09) : Color(red: 0.10, green: 0.38, blue: 0.14))
-                            .cornerRadius(7)
                         }
                         .buttonStyle(.plain)
+                        .foregroundColor(copied ? .qGreen : .qSubtext)
                         .onHover { h in
                             if h { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if !copied && copyHoverEnabled { showCopyInfo = true } } }
                             else { showCopyInfo = false }
