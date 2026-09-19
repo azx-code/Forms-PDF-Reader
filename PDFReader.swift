@@ -292,6 +292,7 @@ private enum UndoEntry {
 class PDFViewHost: ObservableObject {
     weak var pdfView: AnnotatingPDFView?
     weak var quizModel: QuizModel?
+    weak var timerModel: QuizTimerModel?
 
     @Published var hasUnsavedQuizData = false
     @Published var currentScale: CGFloat = 1.0
@@ -599,7 +600,7 @@ class PDFViewHost: ObservableObject {
 
     func save() {
         guard let document = pdfView?.document else { return }
-        if let qm = quizModel { embedQuizData(qm, in: document) }
+        if let qm = quizModel { embedQuizData(qm, timerModel: timerModel, in: document) }
         if let url = document.documentURL {
             document.write(to: url)
             hasUnsavedChanges = false
@@ -611,7 +612,7 @@ class PDFViewHost: ObservableObject {
 
     func saveAs() {
         guard let document = pdfView?.document else { return }
-        if let qm = quizModel { embedQuizData(qm, in: document) }
+        if let qm = quizModel { embedQuizData(qm, timerModel: timerModel, in: document) }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = document.documentURL?.lastPathComponent ?? "document.pdf"
@@ -1087,6 +1088,425 @@ class CalculatorPanel: ObservableObject {
     deinit { if let m = keyMonitor { NSEvent.removeMonitor(m) } }
 }
 
+// MARK: - Quiz Timer
+
+class QuizTimerModel: ObservableObject {
+    enum TimerMode { case overall, perQuestion }
+
+    @Published var mode: TimerMode = .overall
+    @Published var totalMinutes: Int = 75
+    @Published var perQSecs: Int = 90
+    @Published var targetCount: Int = 50
+    @Published var warnColors: Bool = true
+    @Published var countUpOverall: Bool = false
+    @Published var countUpPerQ: Bool = false
+
+    // Overall mode
+    @Published var isRunningOverall: Bool = false
+    @Published var elapsedSecsOverall: TimeInterval = 0
+
+    // Per-Q mode
+    @Published var isRunningPerQ: Bool = false
+    @Published var currentQ: Int = -1
+    @Published var currentQSecs: TimeInterval = 0
+    @Published var currentQDone: Bool = false
+    @Published var questionTimes: [Int: TimeInterval] = [:]
+
+    // For overall mode stats — synced from QuizModel
+    @Published var externalAnsweredCount: Int = 0
+
+    // Tracks elapsed time for unanswered questions (so returning to them doesn't reset)
+    private var elapsedPerQ: [Int: TimeInterval] = [:]
+    private var perQStartTask: DispatchWorkItem?
+    private var ticker: Timer?
+    private var lastTick: Date?
+
+    var isRunning: Bool { isRunningOverall || isRunningPerQ }
+    var totalSecs: TimeInterval { Double(totalMinutes * 60) }
+    var perQSecsD: TimeInterval { Double(perQSecs) }
+
+    // No clamping — allow negatives
+    var overallRemaining: TimeInterval { totalSecs - elapsedSecsOverall }
+    var perQRemaining: TimeInterval { perQSecsD - currentQSecs }
+
+    var mainDisplayTime: TimeInterval {
+        switch mode {
+        case .overall: return countUpOverall ? elapsedSecsOverall : overallRemaining
+        case .perQuestion: return countUpPerQ ? currentQSecs : perQRemaining
+        }
+    }
+
+    var perQTotalElapsed: TimeInterval { questionTimes.values.reduce(0, +) + (currentQDone ? 0 : currentQSecs) }
+    var perQTotalRemaining: TimeInterval {
+        let answered = questionTimes.count
+        let rem = max(0, targetCount - answered)
+        return Double(rem) * perQSecsD - (currentQDone ? 0 : currentQSecs)
+    }
+
+    var answeredCount: Int { mode == .overall ? externalAnsweredCount : questionTimes.count }
+
+    var avgPerQ: TimeInterval? {
+        guard answeredCount > 0 else { return nil }
+        let elapsed = mode == .overall ? elapsedSecsOverall : perQTotalElapsed
+        return elapsed / Double(answeredCount)
+    }
+
+    var paceNeeded: TimeInterval? {
+        let remaining = targetCount - answeredCount
+        guard remaining > 0 else { return nil }
+        if mode == .overall { return overallRemaining / Double(remaining) }
+        else { return perQTotalRemaining / Double(remaining) }
+    }
+
+    // MARK: Controls
+    func toggleOverall() { isRunningOverall ? pauseOverall() : startOverall() }
+
+    func startOverall() {
+        guard !isRunningOverall else { return }
+        isRunningOverall = true; ensureTicker()
+    }
+    func pauseOverall() { isRunningOverall = false; stopTickerIfIdle() }
+    func resetOverall() { pauseOverall(); elapsedSecsOverall = 0; externalAnsweredCount = 0 }
+
+    func startPerQ() {
+        guard !isRunningPerQ, !currentQDone else { return }
+        isRunningPerQ = true; ensureTicker()
+    }
+    func pausePerQ() { isRunningPerQ = false; stopTickerIfIdle() }
+    func resetPerQ() {
+        perQStartTask?.cancel(); perQStartTask = nil
+        pausePerQ(); currentQ = -1; currentQSecs = 0; currentQDone = false
+        questionTimes = [:]; elapsedPerQ = [:]
+    }
+
+    func resetAll() { resetOverall(); resetPerQ() }
+
+    private func ensureTicker() {
+        guard ticker == nil else { return }
+        lastTick = Date()
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(t, forMode: .common)
+        ticker = t
+    }
+    private func stopTickerIfIdle() {
+        guard !isRunningOverall && !isRunningPerQ else { return }
+        ticker?.invalidate(); ticker = nil; lastTick = nil
+    }
+
+    private func tick() {
+        let now = Date()
+        let dt = now.timeIntervalSince(lastTick ?? now)
+        lastTick = now
+        if isRunningOverall { elapsedSecsOverall += dt }
+        if isRunningPerQ && !currentQDone && currentQ >= 0 { currentQSecs += dt }
+    }
+
+    // MARK: Per-Q Integration
+    func onPageChange(to q: Int, isAnswered: Bool) {
+        guard mode == .perQuestion else { return }
+        guard q != currentQ else { return }
+        // Cancel any pending delayed start for the previous question
+        perQStartTask?.cancel(); perQStartTask = nil
+        // Save elapsed time for the departing question (even if unanswered)
+        if currentQ >= 0 { elapsedPerQ[currentQ] = currentQSecs; pausePerQ() }
+        currentQ = q
+        // Restore time from answered or in-progress cache
+        currentQSecs = questionTimes[q] ?? elapsedPerQ[q] ?? 0
+        currentQDone = isAnswered
+        if isAnswered || q < 0 || q >= targetCount { return }
+        // 1-second delay before starting — prevents timer firing on scroll-through
+        let task = DispatchWorkItem { [weak self] in self?.startPerQ() }
+        perQStartTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: task)
+    }
+
+    func onAnswerSubmitted(for q: Int) {
+        guard mode == .perQuestion, q == currentQ else { return }
+        perQStartTask?.cancel(); perQStartTask = nil
+        currentQDone = true; questionTimes[q] = currentQSecs; elapsedPerQ[q] = currentQSecs; pausePerQ()
+    }
+
+    func onAnswerCleared(for q: Int) {
+        guard mode == .perQuestion, q == currentQ else { return }
+        currentQDone = false; questionTimes.removeValue(forKey: q); startPerQ()
+    }
+
+    // MARK: Persistence
+    func toDict() -> [String: Any] {
+        var qt: [String: Double] = [:]
+        for (k, v) in questionTimes { qt[String(k)] = v }
+        var ep: [String: Double] = [:]
+        for (k, v) in elapsedPerQ { ep[String(k)] = v }
+        return [
+            "mode":           mode == .overall ? "overall" : "perQuestion",
+            "totalMinutes":   totalMinutes,
+            "perQSecs":       perQSecs,
+            "warnColors":     warnColors,
+            "countUpOverall": countUpOverall,
+            "countUpPerQ":    countUpPerQ,
+            "elapsedOverall": elapsedSecsOverall,
+            "questionTimes":  qt,
+            "elapsedPerQ":    ep
+        ]
+    }
+
+    func restoreTimer(from json: String) {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let td = root["timer"] as? [String: Any] else { return }
+        if let m = td["mode"] as? String { mode = m == "perQuestion" ? .perQuestion : .overall }
+        if let v = td["totalMinutes"] as? Int    { totalMinutes   = v }
+        if let v = td["perQSecs"]     as? Int    { perQSecs       = v }
+        if let v = td["warnColors"]   as? Bool   { warnColors     = v }
+        if let v = td["countUpOverall"] as? Bool { countUpOverall = v }
+        if let v = td["countUpPerQ"]  as? Bool   { countUpPerQ    = v }
+        if let v = td["elapsedOverall"] as? Double { elapsedSecsOverall = v }
+        if let qt = td["questionTimes"] as? [String: Double] {
+            questionTimes = Dictionary(uniqueKeysWithValues: qt.compactMap { k, v in Int(k).map { ($0, v) } })
+        }
+        if let ep = td["elapsedPerQ"] as? [String: Double] {
+            elapsedPerQ = Dictionary(uniqueKeysWithValues: ep.compactMap { k, v in Int(k).map { ($0, v) } })
+        }
+    }
+
+    deinit { ticker?.invalidate(); perQStartTask?.cancel() }
+}
+
+private struct TimerToolbarItem: View {
+    @ObservedObject var model: QuizTimerModel
+    @Binding var isPresented: Bool
+    var quizIsActive: Bool
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            Label(buttonTitle, systemImage: "timer")
+                .labelStyle(.titleAndIcon)
+        }
+        .foregroundStyle(isPresented || model.isRunning ? Color.accentColor : Color.primary)
+        .help("Timer")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            TimerPopoverView(model: model, quizIsActive: quizIsActive)
+                .preferredColorScheme(.dark)
+        }
+    }
+
+    private var buttonTitle: String {
+        switch model.mode {
+        case .overall:
+            guard model.isRunningOverall || model.elapsedSecsOverall > 0 else { return "Timer" }
+            return fmtTime(model.mainDisplayTime)
+        case .perQuestion:
+            if model.isRunningPerQ {
+                let q = model.currentQ >= 0 ? "Q\(model.currentQ + 1) · " : ""
+                return "\(q)\(fmtTime(model.mainDisplayTime))"
+            }
+            if model.currentQ >= 0 { return "Q\(model.currentQ + 1) · idle" }
+            return "Timer"
+        }
+    }
+
+    private func fmtTime(_ t: TimeInterval) -> String {
+        let neg = t < 0
+        let s = Int(abs(t))
+        let h = s / 3600; let m = (s % 3600) / 60; let sec = s % 60
+        let str = h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
+        return neg ? "-" + str : str
+    }
+}
+
+private struct TimerPopoverView: View {
+    @ObservedObject var model: QuizTimerModel
+    var quizIsActive: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Quiz-started nudge
+            if quizIsActive && !model.isRunning {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.badge.exclamationmark").foregroundStyle(Color.accentColor)
+                    Text("Quiz started — start your timer!")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8).padding(.horizontal, 14)
+                .background(Color.accentColor.opacity(0.12))
+                Divider()
+            }
+
+            // Top controls
+            HStack(spacing: 8) {
+                HStack(spacing: 0) {
+                    modeBtn("Overall", .overall)
+                    modeBtn("Per Q", .perQuestion)
+                }
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+                .cornerRadius(6)
+
+                Divider().frame(height: 20)
+
+                HStack(spacing: 0) {
+                    countDirBtn("↓", isUp: false)
+                    countDirBtn("↑", isUp: true)
+                }
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+                .cornerRadius(6)
+
+                Divider().frame(height: 20)
+
+                Button { model.warnColors.toggle() } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(model.warnColors ? Color.orange : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Warning colors when time is low")
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+
+            Divider()
+
+            // Per-Q tracking warning
+            if model.mode == .perQuestion && !quizIsActive {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle").foregroundStyle(Color.secondary)
+                    Text("Turn on Track My Answers to use this mode")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                Divider()
+            }
+
+            // Big time display
+            VStack(spacing: 3) {
+                Text(fmtTime(model.mainDisplayTime))
+                    .font(.system(size: 44, weight: .bold, design: .monospaced))
+                    .foregroundStyle(mainColor)
+                    .monospacedDigit()
+                Text(mainLabel)
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 14)
+
+            Divider()
+
+            // Stats
+            VStack(spacing: 8) {
+                if model.mode == .overall {
+                    statRow("Elapsed", fmtTime(model.elapsedSecsOverall))
+                } else {
+                    statRow("Total elapsed", fmtTime(model.perQTotalElapsed))
+                    statRow("Total remaining", fmtTime(model.perQTotalRemaining))
+                }
+                statRow("Avg / question", model.avgPerQ.map { fmtTime($0) + " / Q" } ?? "-- : --")
+                statRow("Pace needed", model.paceNeeded.map { fmtTime($0) + " / Q" } ?? "-- : --")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+
+            Divider()
+
+            // Controls
+            HStack(spacing: 10) {
+                if model.mode == .overall {
+                    HStack(spacing: 4) {
+                        TextField("75", value: $model.totalMinutes, formatter: NumberFormatter())
+                            .textFieldStyle(.roundedBorder).frame(width: 44)
+                            .font(.system(size: 12))
+                        Text("min").font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        TextField("90", value: $model.perQSecs, formatter: NumberFormatter())
+                            .textFieldStyle(.roundedBorder).frame(width: 44)
+                            .font(.system(size: 12))
+                        Text("sec/Q").font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    }
+                }
+                Spacer()
+                if model.mode == .perQuestion {
+                    if model.isRunningPerQ {
+                        Button("Pause") { model.pausePerQ() }
+                            .font(.system(size: 12, weight: .semibold))
+                    } else if !model.currentQDone {
+                        Button(model.currentQ >= 0 ? "Start Q\(model.currentQ + 1)" : "Start") { model.startPerQ() }
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                }
+                if model.mode == .overall {
+                    Button(model.isRunningOverall ? "Pause" : "Start") { model.toggleOverall() }
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                Button("Reset") {
+                    if model.mode == .overall { model.resetOverall() } else { model.resetPerQ() }
+                }
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, 10)
+        }
+        .frame(width: 280)
+    }
+
+    @ViewBuilder private func modeBtn(_ label: String, _ m: QuizTimerModel.TimerMode) -> some View {
+        Button(label) { model.mode = m }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: model.mode == m ? .semibold : .regular))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(model.mode == m ? Color.accentColor.opacity(0.25) : Color.clear)
+            .cornerRadius(5)
+    }
+
+    @ViewBuilder private func countDirBtn(_ label: String, isUp: Bool) -> some View {
+        let isActive = model.mode == .overall ? (isUp == model.countUpOverall) : (isUp == model.countUpPerQ)
+        Button(label) {
+            if model.mode == .overall { model.countUpOverall = isUp }
+            else { model.countUpPerQ = isUp }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(isActive ? Color.accentColor.opacity(0.25) : Color.clear)
+        .cornerRadius(5)
+    }
+
+    private func statRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).font(.system(size: 12)).foregroundStyle(.secondary)
+            Spacer()
+            Text(value).font(.system(size: 12, weight: .medium, design: .monospaced))
+        }
+    }
+
+    private var mainColor: Color {
+        guard model.warnColors else { return .primary }
+        let countingUp = model.mode == .overall ? model.countUpOverall : model.countUpPerQ
+        guard !countingUp else { return .primary }
+        let val = model.mainDisplayTime
+        let total = model.mode == .overall ? model.totalSecs : model.perQSecsD
+        if val < 0 { return .red }
+        guard total > 0 else { return .primary }
+        let ratio = val / total
+        if ratio < 0.15 { return .red }
+        if ratio < 0.30 { return .orange }
+        return .primary
+    }
+
+    private var mainLabel: String {
+        if model.mode == .overall {
+            return model.countUpOverall ? "elapsed" : "time remaining"
+        }
+        let q = model.currentQ >= 0 ? "Q\(model.currentQ + 1) " : ""
+        return model.countUpPerQ ? "\(q)elapsed" : "\(q)remaining"
+    }
+
+    private func fmtTime(_ t: TimeInterval) -> String {
+        let neg = t < 0
+        let s = Int(abs(t))
+        let h = s / 3600; let m = (s % 3600) / 60; let sec = s % 60
+        let str = h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
+        return neg ? "-" + str : str
+    }
+}
+
 // MARK: - Root
 
 struct DocEntry: Identifiable {
@@ -1096,6 +1516,7 @@ struct DocEntry: Identifiable {
     let quizModel = QuizModel()
     let host = PDFViewHost()
     let calcPanel = CalculatorPanel()
+    let timerModel = QuizTimerModel()
     var showQuiz = false
     var currentPage = 0
 }
@@ -1119,6 +1540,7 @@ struct ContentView: View {
                     host: docs[activeIndex].host,
                     quizModel: docs[activeIndex].quizModel,
                     calcPanel: docs[activeIndex].calcPanel,
+                    timerModel: docs[activeIndex].timerModel,
                     showQuiz: Binding(
                         get: { docs[activeIndex].showQuiz },
                         set: { docs[activeIndex].showQuiz = $0 }
@@ -1278,6 +1700,7 @@ struct PDFReaderView: View {
     @ObservedObject var host: PDFViewHost
     @ObservedObject var quizModel: QuizModel
     @ObservedObject var calcPanel: CalculatorPanel
+    @ObservedObject var timerModel: QuizTimerModel
     @Binding var showQuiz: Bool
     @Binding var currentPage: Int
     let onSwitchTab: () -> Void
@@ -1289,14 +1712,17 @@ struct PDFReaderView: View {
     @State private var findQuery = ""
     @State private var showLabValues = false
     @State private var quizDataRestored = false
+    @State private var showTimerPopover = false
+    @State private var timerNudgeDone = false
     @EnvironmentObject var appDelegate: AppDelegate
     @Environment(\.colorScheme) var colorScheme
 
-    init(document: PDFDocument, host: PDFViewHost, quizModel: QuizModel, calcPanel: CalculatorPanel, showQuiz: Binding<Bool>, currentPage: Binding<Int>, onSwitchTab: @escaping () -> Void = {}, onCloseTab: @escaping () -> Void = {}) {
+    init(document: PDFDocument, host: PDFViewHost, quizModel: QuizModel, calcPanel: CalculatorPanel, timerModel: QuizTimerModel, showQuiz: Binding<Bool>, currentPage: Binding<Int>, onSwitchTab: @escaping () -> Void = {}, onCloseTab: @escaping () -> Void = {}) {
         self.document = document
         self.host = host
         self.quizModel = quizModel
         self.calcPanel = calcPanel
+        self.timerModel = timerModel
         self._showQuiz = showQuiz
         self._currentPage = currentPage
         self.onSwitchTab = onSwitchTab
@@ -1437,6 +1863,7 @@ struct PDFReaderView: View {
             if showQuiz {
                 Divider()
                 QuizPanel(model: quizModel, currentPage: $currentPage, totalPages: totalPages)
+                    .environmentObject(timerModel)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showQuiz)
@@ -1456,13 +1883,20 @@ struct PDFReaderView: View {
         .onChange(of: quizModel.phase) { _, newPhase in
             if newPhase == .modeSelect { host.hasUnsavedQuizData = false }
             else if newPhase != .modeSelect { host.hasUnsavedQuizData = true }
+            if newPhase == .active && !timerNudgeDone && !timerModel.isRunning {
+                timerNudgeDone = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showTimerPopover = true }
+            }
+            if newPhase == .modeSelect { timerNudgeDone = false }
         }
         .onAppear {
             host.quizModel = quizModel
+            host.timerModel = timerModel
             if !quizDataRestored {
                 quizDataRestored = true
                 if let json = extractQuizJSON(from: document) {
                     quizModel.restore(from: json)
+                    timerModel.restoreTimer(from: json)
                 }
             }
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -1539,6 +1973,9 @@ struct PDFReaderView: View {
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!host.hasUnsavedChanges && !host.hasUnsavedQuizData && !savedFeedback)
                 .help("Save (⌘S)")
+            }
+            ToolbarItem(placement: .automatic) {
+                TimerToolbarItem(model: timerModel, isPresented: $showTimerPopover, quizIsActive: quizModel.phase == .active)
             }
             ToolbarItem(placement: .automatic) {
                 Button {
@@ -1972,13 +2409,14 @@ private struct HoverTooltip: ViewModifier {
 
 private let kQuizAnnotationAuthor = "__QuizCheckerData__"
 
-private func embedQuizData(_ model: QuizModel, in doc: PDFDocument) {
+private func embedQuizData(_ model: QuizModel, timerModel: QuizTimerModel? = nil, in doc: PDFDocument) {
     guard let page = doc.page(at: 0) else { return }
-    // Remove any existing quiz annotation
     page.annotations.filter { $0.userName == kQuizAnnotationAuthor }.forEach { page.removeAnnotation($0) }
-    // If quiz is at the start screen, nothing to save
     guard model.phase != .modeSelect else { return }
-    guard let json = model.toJSON() else { return }
+    guard var dict = model.toDict() else { return }
+    if let tm = timerModel { dict["timer"] = tm.toDict() }
+    guard let data = try? JSONSerialization.data(withJSONObject: dict),
+          let json = String(data: data, encoding: .utf8) else { return }
     let ann = PDFAnnotation(bounds: CGRect(x: -9999, y: -9999, width: 1, height: 1), forType: .text, withProperties: nil)
     ann.userName = kQuizAnnotationAuthor
     ann.contents = json
@@ -2191,7 +2629,7 @@ class QuizModel: ObservableObject {
         }.joined(separator: "\n")
     }
 
-    func toJSON() -> String? {
+    func toDict() -> [String: Any]? {
         let phaseStr: String
         switch phase {
         case .modeSelect: phaseStr = "modeSelect"
@@ -2213,7 +2651,12 @@ class QuizModel: ObservableObject {
             "flags":         Array(flags)
         ]
         if let lfc = lastFeedbackCorrect { dict["lastFeedbackCorrect"] = lfc }
-        guard let data = try? JSONSerialization.data(withJSONObject: dict),
+        return dict
+    }
+
+    func toJSON() -> String? {
+        guard let dict = toDict(),
+              let data = try? JSONSerialization.data(withJSONObject: dict),
               let str  = String(data: data, encoding: .utf8) else { return nil }
         return str
     }
@@ -2420,6 +2863,7 @@ struct QuizSetupView: View {
 
 struct QuizActiveView: View {
     @EnvironmentObject var model: QuizModel
+    @EnvironmentObject var timerModel: QuizTimerModel
     @Binding var showLog: Bool
     @Binding var showNotes: Bool
     @Binding var notesAllView: Bool
@@ -2664,6 +3108,7 @@ struct QuizActiveView: View {
                                 submitAnswer(c)
                             } else if val.isEmpty && viewingQAnswered {
                                 model.removeAnswer(viewingQ)
+                                timerModel.onAnswerCleared(for: viewingQ)
                                 lastSubmitted = nil; lastCorrect = nil
                             } else if !val.isEmpty {
                                 input = ""
@@ -2902,6 +3347,15 @@ struct QuizActiveView: View {
                 feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
             }
             syncInput(viewingQ)
+            timerModel.targetCount = model.targetCount
+            timerModel.externalAnsweredCount = model.total
+            timerModel.onPageChange(to: viewingQ, isAnswered: viewingQAnswered)
+        }
+        .onChange(of: currentPage) { _, _ in
+            timerModel.onPageChange(to: viewingQ, isAnswered: viewingQAnswered)
+        }
+        .onChange(of: model.total) { _, count in
+            timerModel.externalAnsweredCount = count
         }
         .onChange(of: model.lastFeedbackText) { _, text in
             feedbackText = text
@@ -2961,6 +3415,7 @@ struct QuizActiveView: View {
             }
         }
         lastSubmittedQ = viewingQ
+        timerModel.onAnswerSubmitted(for: viewingQ)
         setInputSilently(String(c))
         flashOpacity = 1.0
         withAnimation(.easeOut(duration: 0.7)) { flashOpacity = 0 }
