@@ -1136,7 +1136,11 @@ class QuizTimerModel: ObservableObject {
         }
     }
 
-    var perQTotalElapsed: TimeInterval { questionTimes.values.reduce(0, +) + (currentQDone ? 0 : currentQSecs) }
+    var perQTotalElapsed: TimeInterval {
+        // Sum saved time for all visited questions except the current one, then add live currentQSecs
+        let savedOthers = elapsedPerQ.filter { $0.key != currentQ }.values.reduce(0, +)
+        return savedOthers + (currentQ >= 0 ? currentQSecs : 0)
+    }
     var perQTotalRemaining: TimeInterval {
         let answered = questionTimes.count
         let rem = max(0, targetCount - answered)
