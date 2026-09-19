@@ -1879,6 +1879,30 @@ fileprivate extension Color {
     static let qSubtext = Color(red: 0.345, green: 0.376, blue: 0.412)
 }
 
+private struct InstantTooltip: ViewModifier {
+    let text: String
+    @State private var hovered = false
+    init(_ text: String) { self.text = text }
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovered = $0 }
+            .overlay(alignment: .topTrailing) {
+                if hovered {
+                    Text(text)
+                        .font(.system(size: 11))
+                        .foregroundColor(.qText)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Color(red: 0.12, green: 0.14, blue: 0.19))
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.qBorder, lineWidth: 1))
+                        .cornerRadius(5)
+                        .fixedSize()
+                        .offset(y: -34)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
 // MARK: - Quiz PDF persistence
 
 private let kQuizAnnotationAuthor = "__QuizCheckerData__"
@@ -1946,13 +1970,18 @@ class QuizModel: ObservableObject {
         phase = current >= targetCount ? .summary : .active
     }
 
-    func startTracking() {
+    func startTracking(doneLetters: [Character] = []) {
         key = Array(repeating: "?", count: targetCount)
         trackingOnly = true
         results = []; current = 0
         lastFeedbackText = ""; lastFeedbackCorrect = nil
         notes = Array(repeating: "", count: targetCount)
-        phase = .active
+        flags = []
+        for (i, c) in doneLetters.prefix(targetCount).enumerated() {
+            results.append(QuizEntry(number: i + 1, given: c, correct: "?"))
+            current = i + 1
+        }
+        phase = current >= targetCount ? .summary : .active
     }
 
     func addKey(_ keyLetters: [Character]) {
@@ -2128,7 +2157,7 @@ struct QuizModeSelectView: View {
             modeCard(
                 title: "Without answer key",
                 subtitle: "Log what you answered — add a key later if you want"
-            ) { model.startTracking() }
+            ) { model.trackingOnly = true; model.phase = .setup }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
     }
@@ -2156,27 +2185,32 @@ struct QuizSetupView: View {
 
     private var keyLetters:  [Character] { Array(keyText.uppercased().filter  { $0.isLetter }) }
     private var doneLetters: [Character] { Array(doneText.uppercased().filter { $0.isLetter }) }
-    private var ready: Bool { keyLetters.count == model.targetCount && doneLetters.count <= model.targetCount }
+    private var ready: Bool {
+        if model.trackingOnly { return doneLetters.count <= model.targetCount }
+        return keyLetters.count == model.targetCount && doneLetters.count <= model.targetCount
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             // Back arrow
-            Button { model.phase = .modeSelect } label: {
+            Button { model.trackingOnly = false; model.phase = .modeSelect } label: {
                 Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium))
                     .foregroundColor(.qSubtext)
             }
             .buttonStyle(.plain)
             .padding(.top, 22)
 
-            // Answer key
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text("Answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
-                    Spacer()
-                    Text("\(keyLetters.count)/\(model.targetCount)").font(.system(size: 11))
-                        .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+            // Answer key (hidden in tracking mode)
+            if !model.trackingOnly {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("Answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
+                        Spacer()
+                        Text("\(keyLetters.count)/\(model.targetCount)").font(.system(size: 11))
+                            .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                    }
+                    qTextArea($keyText)
                 }
-                qTextArea($keyText)
             }
 
             // Already done
@@ -2195,7 +2229,13 @@ struct QuizSetupView: View {
             // Start
             VStack {
                 Spacer()
-                Button { model.start(keyLetters: keyLetters, doneLetters: doneLetters) } label: {
+                Button {
+                    if model.trackingOnly {
+                        model.startTracking(doneLetters: doneLetters)
+                    } else {
+                        model.start(keyLetters: keyLetters, doneLetters: doneLetters)
+                    }
+                } label: {
                     Text("Start →")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(ready ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
@@ -2420,7 +2460,7 @@ struct QuizActiveView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(copied ? .qGreen : .qSubtext)
-                    .help("Pastes your answers, correct answers, and notes into 3 columns on Google Sheets / Excel")
+                    .modifier(InstantTooltip("Pastes your answers, correct answers, and notes into 3 columns on Google Sheets / Excel"))
 
                     if !model.trackingOnly {
                         Button {
@@ -2799,7 +2839,7 @@ struct QuizSummaryView: View {
     @Binding var notesAllView: Bool
     @State private var copied = false
     @State private var showResults = false
-    @State private var showLogPanel = true
+    @State private var showLogPanel = false
     @State private var showAddKey = false
     @State private var addKeyText = ""
     private var missed: [QuizEntry] { model.results.filter { !$0.ok } }
@@ -2931,7 +2971,6 @@ struct QuizSummaryView: View {
                 .transition(.opacity)
             }
         }
-        .onAppear { showLog = true }
         .animation(.easeInOut(duration: 0.18), value: showResults)
         .animation(.easeInOut(duration: 0.18), value: showLogPanel)
     }
@@ -2958,7 +2997,7 @@ struct QuizSummaryView: View {
         .padding(.horizontal, 9).padding(.vertical, 5)
         .background(highlighted && !copied ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color(white: 0.22))
         .cornerRadius(5)
-        .help("Pastes your answers, correct answers, and notes into 3 columns on Google Sheets / Excel")
+        .modifier(InstantTooltip("Pastes your answers, correct answers, and notes into 3 columns on Google Sheets / Excel"))
     }
 
     @ViewBuilder private var addKeySection: some View {
