@@ -1901,6 +1901,7 @@ struct PDFReaderView: View {
                 if let json = extractQuizJSON(from: document) {
                     quizModel.restore(from: json)
                     timerModel.restoreTimer(from: json)
+                    timerNudgeDone = true  // don't nudge on restore — only on user-initiated track start
                 }
             }
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -3277,14 +3278,19 @@ struct QuizActiveView: View {
                         Button { copySheet() } label: {
                             HStack(spacing: 5) {
                                 Text(copied ? "copied!" : "copy to spreadsheet")
-                                    .font(.system(size: 14, weight: .bold))
-                                Image(systemName: "info.circle")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.qSubtext.opacity(0.6))
+                                    .font(.system(size: 13, weight: .semibold))
+                                if !copied {
+                                    Image(systemName: "info.circle")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Color(red: 0.18, green: 0.55, blue: 0.20))
+                                }
                             }
+                            .foregroundColor(copied ? .qGreen : Color(red: 0.88, green: 1.0, blue: 0.90))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(copied ? Color(red: 0.06, green: 0.22, blue: 0.09) : Color(red: 0.10, green: 0.38, blue: 0.14))
+                            .cornerRadius(7)
                         }
                         .buttonStyle(.plain)
-                        .foregroundColor(copied ? .qGreen : .qSubtext)
                         .onHover { h in
                             if h { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if !copied && copyHoverEnabled { showCopyInfo = true } } }
                             else { showCopyInfo = false }
