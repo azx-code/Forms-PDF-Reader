@@ -37,7 +37,7 @@ struct PDFReaderApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 750, minHeight: 550)
+                .frame(minWidth: 500, minHeight: 400)
                 .environmentObject(appDelegate)
         }
         .commands {
@@ -86,6 +86,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    private var settingsWindow: NSWindow?
+
+    func openSettings() {
+        if let w = settingsWindow, w.isVisible { w.makeKeyAndOrderFront(nil); return }
+        let hosting = NSHostingController(rootView: SettingsView())
+        let w = NSWindow(contentViewController: hosting)
+        w.title = "Forms PDF Reader Settings"
+        w.styleMask = [.titled, .closable]
+        w.isReleasedWhenClosed = false
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        settingsWindow = w
+        DispatchQueue.main.async { w.makeFirstResponder(nil) }
+    }
 }
 
 // MARK: - Window Close Interceptor
@@ -1300,12 +1315,26 @@ private struct TimerToolbarItem: View {
             Label(buttonTitle, systemImage: "timer")
                 .labelStyle(.titleAndIcon)
         }
-        .foregroundStyle(isPresented || model.isRunning ? Color.accentColor : Color.primary)
+        .foregroundStyle(isPresented ? Color.accentColor : model.isRunning ? runningColor : Color.primary)
         .help("Timer")
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             TimerPopoverView(model: model, quizIsActive: quizIsActive)
                 .preferredColorScheme(.dark)
         }
+    }
+
+    private var runningColor: Color {
+        guard model.warnColors else { return .accentColor }
+        let countingUp = model.mode == .overall ? model.countUpOverall : model.countUpPerQ
+        guard !countingUp else { return .accentColor }
+        let val = model.mainDisplayTime
+        let total = model.mode == .overall ? model.totalSecs : model.perQSecsD
+        if val < 0 { return .red }
+        guard total > 0 else { return .accentColor }
+        let ratio = val / total
+        if ratio < 0.15 { return .red }
+        if ratio < 0.30 { return .orange }
+        return .accentColor
     }
 
     private var buttonTitle: String {
@@ -1593,6 +1622,68 @@ private struct SpreadsheetSettingsView: View {
     }
 }
 
+private struct SpreadsheetColumnOrderRows: View {
+    @AppStorage("ss_columnOrder") private var columnOrderStr = "given,correct,notes"
+    private static let labels = ["given": "My Answer", "correct": "Correct Answer", "notes": "Notes"]
+    @State private var draggingCol: String?
+    private var cols: [String] { columnOrderStr.components(separatedBy: ",") }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ForEach(Array(cols.enumerated()), id: \.element) { idx, col in
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(Self.labels[col] ?? col)
+                    Spacer()
+                    VStack(spacing: 1) {
+                        Button { move(from: idx, by: -1) } label: {
+                            Image(systemName: "chevron.up").font(.system(size: 9, weight: .semibold))
+                                .frame(width: 20, height: 14)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(BorderlessButtonStyle()).disabled(idx == 0)
+                        Button { move(from: idx, by: 1) } label: {
+                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                                .frame(width: 20, height: 14)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(BorderlessButtonStyle()).disabled(idx == cols.count - 1)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(draggingCol == col
+                    ? Color(NSColor.controlBackgroundColor).opacity(0.4)
+                    : Color(NSColor.controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+                .onDrag {
+                    draggingCol = col
+                    return NSItemProvider(object: col as NSString)
+                }
+                .onDrop(of: [.text], isTargeted: nil) { _ in
+                    guard let src = draggingCol, src != col else { draggingCol = nil; return false }
+                    var c = cols
+                    guard let fromIdx = c.firstIndex(of: src), let toIdx = c.firstIndex(of: col) else { draggingCol = nil; return false }
+                    c.move(fromOffsets: IndexSet(integer: fromIdx), toOffset: toIdx > fromIdx ? toIdx + 1 : toIdx)
+                    columnOrderStr = c.joined(separator: ",")
+                    draggingCol = nil
+                    return true
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .onDrop(of: [.text], isTargeted: nil) { _ in draggingCol = nil; return false }
+    }
+
+    private func move(from idx: Int, by delta: Int) {
+        var c = cols; let newIdx = idx + delta
+        guard newIdx >= 0 && newIdx < c.count else { return }
+        c.swapAt(idx, newIdx)
+        columnOrderStr = c.joined(separator: ",")
+    }
+}
+
 // MARK: - Root
 
 struct DocEntry: Identifiable {
@@ -1797,10 +1888,11 @@ struct PDFReaderView: View {
     @State private var savedFeedback = false
     @State private var findQuery = ""
     @State private var showLabValues = false
+    @State private var toolbarWidth: CGFloat = 900
+    private var toolbarCompact: Bool { toolbarWidth < 800 }
     @State private var quizDataRestored = false
     @State private var showTimerPopover = false
     @State private var timerNudgeDone = false
-    @State private var showSpreadsheetSettings = false
     @EnvironmentObject var appDelegate: AppDelegate
     @Environment(\.colorScheme) var colorScheme
 
@@ -1916,16 +2008,19 @@ struct PDFReaderView: View {
                     let bgIdle: Color   = Color(red:0.25,green:0.50,blue:0.88)
                     HStack(spacing: 5) {
                         Image(systemName: "checklist")
-                        Text("Track my answers").font(.system(size: 12, weight: .semibold))
+                        if !toolbarCompact {
+                            Text("Track my answers").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        }
                     }
                     .foregroundStyle(Color(red: 0.88, green: 0.95, blue: 1.0))
-                    .padding(.horizontal, 20).padding(.vertical, 6)
+                    .padding(.horizontal, toolbarCompact ? 10 : 20).padding(.vertical, 6)
                     .background(showQuiz ? bgActive : bgIdle)
                     .animation(.easeInOut(duration: 0.2), value: showQuiz)
                     .cornerRadius(6)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.25), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .help("Track my answers")
                 .help("Quiz Checker")
 
                 Divider().frame(height: 20)
@@ -1944,8 +2039,15 @@ struct PDFReaderView: View {
                     .help("Fit page (⌘0)")
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.vertical, 7)
+            .frame(height: 44)
+            .clipped()
             .background(Color(NSColor.windowBackgroundColor))
+            .background(GeometryReader { geo in
+                Color.clear
+                    .onAppear { toolbarWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { _, w in toolbarWidth = w }
+            })
             .animation(.easeInOut(duration: 0.25), value: savedFeedback)
 
             if showQuiz {
@@ -2064,14 +2166,12 @@ struct PDFReaderView: View {
                 .help("Save (⌘S)")
             }
             ToolbarItem(placement: .automatic) {
-                Button { showSpreadsheetSettings.toggle() } label: {
+                Button {
+                    appDelegate.openSettings()
+                } label: {
                     Image(systemName: "gearshape")
                 }
-                .foregroundStyle(showSpreadsheetSettings ? Color.accentColor : Color.primary)
-                .help("Spreadsheet export settings")
-                .popover(isPresented: $showSpreadsheetSettings, arrowEdge: .bottom) {
-                    SpreadsheetSettingsView().preferredColorScheme(.dark)
-                }
+                .help("Settings")
             }
             ToolbarItem(placement: .automatic) {
                 TimerToolbarItem(model: timerModel, isPresented: $showTimerPopover, quizIsActive: quizModel.phase == .active)
@@ -2148,8 +2248,9 @@ struct ZoomTextField: View {
                 .onChange(of: focused) { _, isFocused in
                     if !isFocused { DispatchQueue.main.async { commit() } }
                 }
-            Text("%").foregroundStyle(.secondary)
+            Text("%").foregroundStyle(.secondary).lineLimit(1)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .onChange(of: host.currentScale) { _, scale in
             if !focused { text = "\(Int(scale * 100))" }
         }
@@ -2176,7 +2277,7 @@ struct PageTextField: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text("Page").foregroundStyle(.secondary)
+            Text("Page").foregroundStyle(.secondary).lineLimit(1)
             TextField("", text: $text)
                 .frame(width: 36)
                 .multilineTextAlignment(.center)
@@ -2185,8 +2286,9 @@ struct PageTextField: View {
                 .onChange(of: focused) { _, isFocused in
                     if !isFocused { DispatchQueue.main.async { commit() } }
                 }
-            Text("of \(totalPages)").foregroundStyle(.secondary)
+            Text("of \(totalPages)").foregroundStyle(.secondary).lineLimit(1)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .monospacedDigit()
         .onChange(of: currentPage) { _, page in
             if !focused { text = "\(page + 1)" }
@@ -3028,11 +3130,13 @@ struct QuizActiveView: View {
     @State private var toolsRestartConfirm = false
     @State private var pastAnswersText = ""
     @FocusState private var focused: Bool
+    @State private var panelWidth: CGFloat = 900
+    private var compact: Bool { panelWidth < 800 }
 
     @ViewBuilder private var toolsButton: some View {
         Button { showTools.toggle() } label: {
             HStack(spacing: 3) {
-                Text("tools").font(.system(size: 14, weight: .bold)).foregroundColor(.qSubtext)
+                Text("tools").font(.system(size: compact ? 12 : 14, weight: .bold)).foregroundColor(.qSubtext).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundColor(.qSubtext)
             }
         }
@@ -3094,7 +3198,7 @@ struct QuizActiveView: View {
 
                         // — Copy answer key —
                         if !model.trackingOnly && !model.key.isEmpty {
-                            Button { copyKey(); showTools = false } label: {
+                            Button { copyKey() } label: {
                                 Text(keyCopied ? "✓ answer key copied" : "copy answer key")
                                     .font(.system(size: 13, weight: .bold))
                                     .foregroundColor(keyCopied ? .qGreen : .qText)
@@ -3186,7 +3290,7 @@ struct QuizActiveView: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 // ── Left cluster ──────────────────────────────────────────
-                HStack(spacing: 10) {
+                HStack(spacing: compact ? 6 : 10) {
                     // ⓘ icon with hover popover showing progress + missing
                     let answeredSet = Set(model.results.map { $0.number - 1 })
                     let missingQs = (0..<model.targetCount).filter { !answeredSet.contains($0) }
@@ -3261,9 +3365,12 @@ struct QuizActiveView: View {
                         }
                         .onChange(of: viewingQ) { _, q in syncInput(q) }
 
-                    Text(visibleFeedback)
-                        .font(.system(size: 14, weight: .bold)).foregroundColor(feedbackColor)
+                    if !compact {
+                        Text(visibleFeedback)
+                            .font(.system(size: 14, weight: .bold)).foregroundColor(feedbackColor)
+                    }
 
+                    if !compact {
                     Button("undo") {
                         model.postQuiz = false
                         model.undo()
@@ -3276,6 +3383,7 @@ struct QuizActiveView: View {
                     .buttonStyle(.plain).font(.system(size: 14, weight: .bold))
                     .foregroundColor(model.results.isEmpty ? Color.qSubtext.opacity(0.3) : (model.postQuiz ? .qYellow : .qSubtext))
                     .disabled(model.results.isEmpty)
+                    } // end if !compact
 
                     // copy moved to right cluster
 
@@ -3328,8 +3436,10 @@ struct QuizActiveView: View {
                     } label: {
                         let isPreSubmit = model.phase == .preSubmit
                         HStack(spacing: 5) {
-                            Text(isPreSubmit ? "dismiss" : "log/notes").font(.system(size: 14, weight: .bold))
+                            Text(isPreSubmit ? "dismiss" : (compact ? "log" : "log/notes"))
+                                .font(.system(size: compact ? 12 : 14, weight: .bold))
                                 .foregroundColor(isPreSubmit ? .qAccent : (showLog ? .qAccent : .qSubtext))
+                                .lineLimit(1)
                             Image(systemName: isPreSubmit ? "xmark" : "list.clipboard.fill")
                                 .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(isPreSubmit ? .qAccent : (showLog ? .qAccent : .qSubtext))
@@ -3340,7 +3450,7 @@ struct QuizActiveView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 // ── Center: copy (postQuiz) or submitted letter display ───
-                if model.postQuiz && lastSubmitted == nil {
+                if !compact && model.postQuiz && lastSubmitted == nil {
                     Button { copySheet() } label: {
                         HStack(spacing: 5) {
                             if copied {
@@ -3370,7 +3480,7 @@ struct QuizActiveView: View {
                             .padding(.horizontal, 14).padding(.vertical, 10)
                             .background(Color.qBg).preferredColorScheme(.dark)
                     }
-                } else if let letter = lastSubmitted {
+                } else if !compact, let letter = lastSubmitted {
                     let centerActive = !model.trackingOnly && model.revealFeedback
                     let showWrongAnswer = centerActive && feedbackColor == .qRed
                     let centerText: String = {
@@ -3398,11 +3508,14 @@ struct QuizActiveView: View {
                     if !model.postQuiz {
                         Button { copySheet() } label: {
                             HStack(spacing: 5) {
-                                Text(copied ? "copied!" : "copy to spreadsheet")
-                                    .font(.system(size: 14, weight: .bold))
-                                Image(systemName: "info.circle")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.qSubtext.opacity(0.6))
+                                Text(copied ? "copied!" : (compact ? "copy" : "copy to spreadsheet"))
+                                    .font(.system(size: compact ? 12 : 14, weight: .bold))
+                                    .lineLimit(1)
+                                if !compact {
+                                    Image(systemName: "info.circle")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.qSubtext.opacity(0.6))
+                                }
                             }
                         }
                         .buttonStyle(.plain)
@@ -3426,8 +3539,10 @@ struct QuizActiveView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: model.revealScore ? "eye.fill" : "eye.slash.fill")
-                                Text(model.revealScore ? "score on" : "score off")
-                                    .font(.system(size: 14, weight: .semibold))
+                                if !compact {
+                                    Text(model.revealScore ? "score on" : "score off")
+                                        .font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                                }
                             }
                         }
                         .buttonStyle(.bordered)
@@ -3439,8 +3554,10 @@ struct QuizActiveView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: model.revealFeedback ? "checkmark.circle.fill" : "checkmark.circle")
-                                Text(model.revealFeedback ? "feedback on" : "feedback off")
-                                    .font(.system(size: 14, weight: .semibold))
+                                if !compact {
+                                    Text(model.revealFeedback ? "feedback on" : "feedback off")
+                                        .font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                                }
                             }
                         }
                         .buttonStyle(.bordered)
@@ -3451,6 +3568,11 @@ struct QuizActiveView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(GeometryReader { geo in
+                Color.clear
+                    .onAppear { panelWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { _, w in panelWidth = w }
+            })
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -4357,12 +4479,28 @@ struct SettingsView: View {
                 sectionHeader("Quiz")
                 HStack {
                     Text("Questions per quiz").frame(width: 165, alignment: .leading)
-                    Stepper(value: $sc.questionCount, in: 1...500) {
-                        Text("\(sc.questionCount)")
-                            .foregroundStyle(sc.questionCount == 50 ? Color.primary : Color.accentColor)
-                            .frame(width: 40, alignment: .leading)
-                    }
+                    TextField("", value: $sc.questionCount, formatter: {
+                        let f = NumberFormatter(); f.minimum = 1; f.maximum = 500; return f
+                    }())
+                    .frame(width: 60)
+                    .textFieldStyle(.roundedBorder)
+                    .foregroundStyle(sc.questionCount == 50 ? Color.primary : Color.accentColor)
                 }
+            }
+
+            Divider().padding(.vertical, 10)
+
+            Group {
+                sectionHeader("Spreadsheet Export")
+                HStack {
+                    Toggle("Include column headers", isOn: Binding(
+                        get: { UserDefaults.standard.bool(forKey: "ss_includeHeaders") },
+                        set: { UserDefaults.standard.set($0, forKey: "ss_includeHeaders") }
+                    ))
+                    .toggleStyle(.switch)
+                }
+                .padding(.vertical, 2)
+                SpreadsheetColumnOrderRows()
             }
 
             Divider().padding(.vertical, 10)
