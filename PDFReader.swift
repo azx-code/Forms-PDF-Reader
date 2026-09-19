@@ -305,7 +305,7 @@ class PDFViewHost: ObservableObject {
     @Published var selectedAnnotation: PDFAnnotation?
     @Published var selectedPage: PDFPage?
     static let highlightColors: [Color] = [
-        Color(red: 1.0, green: 0.96, blue: 0.25),      // yellow
+        Color(red: 1.0, green: 1.0, blue: 0.0),           // yellow
         Color(red: 0.50, green: 0.78, blue: 1.0),       // light blue
         Color(red: 0.38, green: 0.95, blue: 0.55)       // light green
     ]
@@ -634,10 +634,14 @@ class PDFViewHost: ObservableObject {
         var added: [(PDFAnnotation, PDFPage)] = []
         for line in selection.selectionsByLine() {
             guard let page = line.pages.first else { continue }
-            let bounds = line.bounds(for: page)
+            let rawBounds = line.bounds(for: page)
+            // Trim 12% from top and bottom so highlights don't extend into line spacing
+            let trimY = rawBounds.height * 0.12
+            let bounds = CGRect(x: rawBounds.minX, y: rawBounds.minY + trimY,
+                                width: rawBounds.width, height: rawBounds.height - 2 * trimY)
             let ann: PDFAnnotation
             if subtype == .strikeOut {
-                ann = makeStrikeAnnotation(for: bounds)
+                ann = makeStrikeAnnotation(for: rawBounds)
             } else {
                 ann = PDFAnnotation(bounds: bounds, forType: subtype, withProperties: nil)
                 ann.color = color
@@ -1328,12 +1332,12 @@ struct PDFReaderView: View {
                 Divider().frame(height: 20)
 
                 // Tool buttons
-                ToolButtonView(icon: "cursorarrow", label: "Select and move annotations.", isActive: host.activeTool == .cursor && !host.textBoxMode) { host.activeTool = .cursor; host.textBoxMode = false }
-                ToolButtonView(icon: "highlighter", label: "Left-click and drag to highlight text.\nRight-click and drag to strikethrough.\n\nDon't release the mouse while highlighting text to copy the text.\n\nClick an existing highlight or strikethrough to remove it and restore the original text.", boldTitle: "Write (Default)", isActive: host.activeTool == .highlight && !host.textBoxMode) { host.activeTool = .highlight; host.textBoxMode = false }
-                ToolButtonView(icon: "strikethrough", label: "Left-click and drag to strikethrough text only.", isActive: host.activeTool == .strikethrough && !host.textBoxMode) { host.activeTool = .strikethrough; host.textBoxMode = false }
+                ToolButtonView(icon: "cursorarrow", label: "Select and move annotations.", boldTitle: "Cursor", isActive: host.activeTool == .cursor && !host.textBoxMode) { host.activeTool = .cursor; host.textBoxMode = false }
+                ToolButtonView(icon: "highlighter", label: "Left-click and drag to highlight text.\nRight-click and drag to strikethrough.\n\nTo copy text, don't release the mouse while highlighting.\n\nClick an existing highlight or strikethrough to remove it and restore the original text.", boldTitle: "Annotate (Default)", isActive: host.activeTool == .highlight && !host.textBoxMode) { host.activeTool = .highlight; host.textBoxMode = false }
+                ToolButtonView(icon: "strikethrough", label: "Left-click and drag to strikethrough text only.", boldTitle: "Strikethrough", isActive: host.activeTool == .strikethrough && !host.textBoxMode) { host.activeTool = .strikethrough; host.textBoxMode = false }
 
                 // Text box button
-                ToolButtonView(icon: "text.cursor", label: "Click anywhere on the page to place a text box.\n\nNote: resizing text boxes isn't supported yet — you can move and edit them, but not resize.", isActive: host.textBoxMode) { host.textBoxMode.toggle() }
+                ToolButtonView(icon: "text.cursor", label: "Click anywhere on the page to place a text box.\n\nNote: resizing text boxes isn't supported yet — you can move and edit them, but not resize.", boldTitle: "Text Box", isActive: host.textBoxMode) { host.textBoxMode.toggle() }
 
                 // Font controls — visible in text box mode or when a text box is selected
                 if host.textBoxMode || host.selectedAnnotation != nil {
@@ -1401,7 +1405,7 @@ struct PDFReaderView: View {
                         Image(systemName: "checklist")
                         Text("Track my answers").font(.system(size: 12, weight: .semibold))
                     }
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(Color(red: 0.88, green: 0.95, blue: 1.0))
                     .padding(.horizontal, 20).padding(.vertical, 6)
                     .background(showQuiz ? bgActive : bgIdle)
                     .cornerRadius(6)
@@ -1427,9 +1431,8 @@ struct PDFReaderView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(showQuiz ? Color(red: 0.12, green: 0.14, blue: 0.18) : Color(NSColor.windowBackgroundColor))
+            .background(Color(NSColor.windowBackgroundColor))
             .animation(.easeInOut(duration: 0.25), value: savedFeedback)
-            .animation(.easeInOut(duration: 0.2), value: showQuiz)
 
             if showQuiz {
                 Divider()
@@ -1890,7 +1893,7 @@ private struct ToolButtonView: View {
     }
 
     var body: some View {
-        Button(action: action) { Image(systemName: icon) }
+        Button(action: action) { Image(systemName: icon).font(.system(size: 14)) }
             .buttonStyle(.bordered)
             .focusEffectDisabled()
             .foregroundStyle(isActive ? Color.accentColor : Color.primary)
@@ -1918,7 +1921,7 @@ private struct ToolButtonView: View {
                     }
                     Text(label)
                         .font(.system(size: 13))
-                        .foregroundColor(boldTitle != nil ? .qSubtext : .qText)
+                        .foregroundColor(.qText)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(Color.qBg).preferredColorScheme(.dark)
@@ -2044,6 +2047,28 @@ class QuizModel: ObservableObject {
             current = i + 1
         }
         phase = current >= targetCount ? .summary : .active
+    }
+
+    func addPastAnswers(_ letters: [Character]) {
+        for (i, c) in letters.prefix(targetCount).enumerated() {
+            let correctChar: Character = trackingOnly ? "?" : (i < key.count ? key[i] : "?")
+            let entry = QuizEntry(number: i + 1, given: c, correct: correctChar)
+            if let idx = results.firstIndex(where: { $0.number == i + 1 }) {
+                results[idx] = entry
+            } else if let insertPos = results.firstIndex(where: { $0.number > i + 1 }) {
+                results.insert(entry, at: insertPos)
+            } else {
+                results.append(entry)
+            }
+        }
+        current = max(current, letters.count)
+        if !trackingOnly, let last = results.last {
+            lastFeedbackText = last.ok
+                ? "✓  correct   \(score)/\(total)  \(String(format: "%.1f", pct))%"
+                : "✗   \(score)/\(total)  \(String(format: "%.1f", pct))%"
+            lastFeedbackCorrect = last.ok
+        }
+        if phase == .summary || phase == .preSubmit { phase = .active }
     }
 
     func addKey(_ keyLetters: [Character]) {
@@ -2243,18 +2268,22 @@ struct QuizModeSelectView: View {
     @EnvironmentObject var model: QuizModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            modeCard(
-                title: "With answer key",
-                subtitle: "Check answers as you go and see your score"
-            ) { model.phase = .setup }
+        HStack(spacing: 0) {
+            Spacer()
+            HStack(spacing: 10) {
+                modeCard(
+                    title: "With answer key",
+                    subtitle: "Check answers as you go and see your score"
+                ) { model.phase = .setup }
 
-            modeCard(
-                title: "Without answer key",
-                subtitle: "Log what you answered — add a key later if you want"
-            ) { model.trackingOnly = true; model.phase = .setup }
+                modeCard(
+                    title: "Without answer key",
+                    subtitle: "Log what you answered — add a key later if you want"
+                ) { model.trackingOnly = true; model.phase = .setup }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            Spacer()
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
     }
 
     @ViewBuilder private func modeCard(title: String, subtitle: String, action: @escaping () -> Void) -> some View {
@@ -2263,7 +2292,7 @@ struct QuizModeSelectView: View {
                 Text(title).font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
                 Text(subtitle).font(.system(size: 11)).foregroundColor(.qSubtext)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: 220, alignment: .leading)
             .padding(10)
             .background(Color.qSurface)
             .cornerRadius(6)
@@ -2286,63 +2315,69 @@ struct QuizSetupView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Back arrow
-            Button { model.trackingOnly = false; model.phase = .modeSelect } label: {
-                Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.qSubtext)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 22)
+        HStack(spacing: 0) {
+            Spacer()
+            HStack(alignment: .top, spacing: 12) {
+                // Back arrow
+                Button { model.trackingOnly = false; model.phase = .modeSelect } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.qSubtext)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 22)
 
-            // Answer key (hidden in tracking mode)
-            if !model.trackingOnly {
+                // Answer key (hidden in tracking mode)
+                if !model.trackingOnly {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
+                            Spacer()
+                            Text("\(keyLetters.count)/\(model.targetCount)").font(.system(size: 11))
+                                .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                        }
+                        qTextArea($keyText)
+                    }
+                    .frame(width: 180)
+                }
+
+                // Already done
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
-                        Text("Answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
+                        Text("Already done (opt.)").font(.system(size: 11)).foregroundColor(.qSubtext)
                         Spacer()
-                        Text("\(keyLetters.count)/\(model.targetCount)").font(.system(size: 11))
-                            .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                        let n = doneLetters.count
+                        let tgt = model.targetCount
+                        Text(n > tgt ? "max \(tgt)" : n == 0 ? "→Q1" : "→Q\(n+1)").font(.system(size: 11))
+                            .foregroundColor(n > tgt ? .qRed : .qSubtext)
                     }
-                    qTextArea($keyText)
+                    qTextArea($doneText)
                 }
-            }
+                .frame(width: 180)
 
-            // Already done
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text("Already done (opt.)").font(.system(size: 11)).foregroundColor(.qSubtext)
+                // Start
+                VStack {
                     Spacer()
-                    let n = doneLetters.count
-                    let tgt = model.targetCount
-                    Text(n > tgt ? "max \(tgt)" : n == 0 ? "→Q1" : "→Q\(n+1)").font(.system(size: 11))
-                        .foregroundColor(n > tgt ? .qRed : .qSubtext)
-                }
-                qTextArea($doneText)
-            }
-
-            // Start
-            VStack {
-                Spacer()
-                Button {
-                    if model.trackingOnly {
-                        model.startTracking(doneLetters: doneLetters)
-                    } else {
-                        model.start(keyLetters: keyLetters, doneLetters: doneLetters)
+                    Button {
+                        if model.trackingOnly {
+                            model.startTracking(doneLetters: doneLetters)
+                        } else {
+                            model.start(keyLetters: keyLetters, doneLetters: doneLetters)
+                        }
+                    } label: {
+                        Text("Start →")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(ready ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(ready ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
+                            .cornerRadius(6)
                     }
-                } label: {
-                    Text("Start →")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(ready ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
-                        .padding(.horizontal, 12).padding(.vertical, 7)
-                        .background(ready ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
-                        .cornerRadius(6)
+                    .buttonStyle(.plain).disabled(!ready)
                 }
-                .buttonStyle(.plain).disabled(!ready)
+                .frame(height: 68)
             }
-            .frame(height: 68)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            Spacer()
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     @ViewBuilder private func qTextArea(_ b: Binding<String>) -> some View {
@@ -2381,9 +2416,12 @@ struct QuizActiveView: View {
     @State private var showCopyInfo = false
     @State private var copyHoverEnabled = true
     @State private var copied = false
+    @State private var keyCopied = false
     @State private var showAddKey = false
     @State private var addKeyText = ""
     @State private var showRestartConfirm = false
+    @State private var showPastAnswers = false
+    @State private var pastAnswersText = ""
     @FocusState private var focused: Bool
 
     @ViewBuilder private var restartButton: some View {
@@ -2406,6 +2444,46 @@ struct QuizActiveView: View {
                 }
             }
             .padding(16).background(Color.qBg).preferredColorScheme(.dark)
+        }
+    }
+
+    @ViewBuilder private var editAnsweredButton: some View {
+        let pastLetters = Array(pastAnswersText.uppercased().filter { $0.isLetter })
+        Button { showPastAnswers.toggle() } label: {
+            Text("add past answers").font(.system(size: 14, weight: .bold)).foregroundColor(.qSubtext)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showPastAnswers, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("past answers").font(.system(size: 11)).foregroundColor(.qSubtext)
+                    Spacer()
+                    let n = pastLetters.count
+                    let tgt = model.targetCount
+                    Text(n > tgt ? "max \(tgt)" : n == 0 ? "→Q1" : "→Q\(n+1)")
+                        .font(.system(size: 11))
+                        .foregroundColor(n > tgt ? .qRed : .qSubtext)
+                }
+                TextEditor(text: $pastAnswersText)
+                    .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                    .scrollContentBackground(.hidden).background(Color.qSurface)
+                    .frame(width: 200, height: 52)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                let canApply = pastLetters.count > 0 && pastLetters.count <= model.targetCount
+                Button {
+                    model.addPastAnswers(pastLetters)
+                    showPastAnswers = false; pastAnswersText = ""
+                } label: {
+                    Text("apply →")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(canApply ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(canApply ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
+                        .cornerRadius(6)
+                }
+                .buttonStyle(.plain).disabled(!canApply)
+            }
+            .padding(12).background(Color.qBg).preferredColorScheme(.dark)
         }
     }
 
@@ -2558,8 +2636,10 @@ struct QuizActiveView: View {
                             .padding(12).background(Color.qBg).preferredColorScheme(.dark)
                         }
                         restartButton
+                        editAnsweredButton
                     } else {
                         restartButton
+                        editAnsweredButton
                     }
 
                     Button {
@@ -2657,6 +2737,15 @@ struct QuizActiveView: View {
                                 .font(.system(size: 13)).foregroundColor(.qText)
                                 .padding(.horizontal, 14).padding(.vertical, 10)
                                 .background(Color.qBg).preferredColorScheme(.dark)
+                        }
+
+                        if !model.trackingOnly && !model.key.isEmpty {
+                            Button { copyKey() } label: {
+                                Text(keyCopied ? "copied!" : "copy answer key")
+                                    .font(.system(size: 14, weight: .bold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(keyCopied ? .qGreen : .qSubtext)
                         }
                     }
 
@@ -2786,6 +2875,14 @@ struct QuizActiveView: View {
         NSPasteboard.general.setString(model.sheetsText(), forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { copied = false }
+    }
+
+    private func copyKey() {
+        let text = model.key.map { String($0).uppercased() }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        keyCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { keyCopied = false }
     }
 }
 
@@ -3126,6 +3223,7 @@ struct QuizSummaryView: View {
     @Binding var showNotes: Bool
     @Binding var notesAllView: Bool
     @State private var copied = false
+    @State private var keyCopied = false
     @State private var showCopyInfo = false
     @State private var showResults = false
     @State private var showAddKey = false
@@ -3197,6 +3295,18 @@ struct QuizSummaryView: View {
                                 .font(.system(size: 13)).foregroundColor(.qText)
                                 .padding(.horizontal, 14).padding(.vertical, 10)
                                 .background(Color.qBg).preferredColorScheme(.dark)
+                        }
+
+                        if !model.trackingOnly && !model.key.isEmpty {
+                            Button { copyKey() } label: {
+                                Text(keyCopied ? "copied!" : "copy answer key")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(keyCopied ? .qGreen : .qSubtext)
+                                    .padding(.horizontal, 14).padding(.vertical, 8)
+                                    .background(Color.qBorder)
+                                    .cornerRadius(7)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     Spacer(minLength: 22)
@@ -3316,6 +3426,14 @@ struct QuizSummaryView: View {
         NSPasteboard.general.setString(model.sheetsText(), forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { copied = false }
+    }
+
+    private func copyKey() {
+        let text = model.key.map { String($0).uppercased() }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        keyCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { keyCopied = false }
     }
 }
 
