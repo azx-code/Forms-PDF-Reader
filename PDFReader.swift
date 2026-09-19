@@ -2624,13 +2624,21 @@ class QuizModel: ObservableObject {
             let e = results.first(where: { $0.number - 1 == i })
             let given   = e.map { String($0.given) }   ?? "-"
             let correct = e.map { String($0.correct) } ?? ""
-            let note    = notes.indices.contains(i) ? notes[i] : ""
+            let rawNote = notes.indices.contains(i) ? notes[i] : ""
+            let note    = tsvField(rawNote)
             if trackingOnly {
                 return hasNotes ? "\(given)\t\(note)" : given
             } else {
                 return hasNotes ? "\(given)\t\(correct)\t\(note)" : "\(given)\t\(correct)"
             }
         }.joined(separator: "\n")
+    }
+
+    // Wraps a field in double-quotes if it contains newlines, tabs, or quotes,
+    // so Excel/Sheets keeps it in one cell.
+    private func tsvField(_ s: String) -> String {
+        guard s.contains("\n") || s.contains("\t") || s.contains("\"") else { return s }
+        return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     func toDict() -> [String: Any]? {
