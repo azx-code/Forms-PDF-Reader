@@ -1419,7 +1419,7 @@ struct PDFReaderView: View {
 
             if showQuiz {
                 Divider()
-                QuizPanel(model: quizModel)
+                QuizPanel(model: quizModel, currentPage: currentPage, totalPages: totalPages)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showQuiz)
@@ -2062,6 +2062,8 @@ class QuizModel: ObservableObject {
 
 struct QuizPanel: View {
     @ObservedObject var model: QuizModel
+    let currentPage: Int
+    let totalPages: Int
     @State private var showLog   = false
     @State private var showNotes = false
     @State private var notesAllView = false  // false = current Q, true = all Qs
@@ -2071,7 +2073,7 @@ struct QuizPanel: View {
             switch model.phase {
             case .modeSelect: QuizModeSelectView().environmentObject(model)
             case .setup:      QuizSetupView().environmentObject(model)
-            case .active:     QuizActiveView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView).environmentObject(model)
+            case .active:     QuizActiveView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView, currentPage: currentPage, totalPages: totalPages).environmentObject(model)
             case .summary:    QuizSummaryView(showLog: $showLog, showNotes: $showNotes, notesAllView: $notesAllView).environmentObject(model)
             }
         }
@@ -2193,7 +2195,15 @@ struct QuizActiveView: View {
     @Binding var showLog: Bool
     @Binding var showNotes: Bool
     @Binding var notesAllView: Bool
+    let currentPage: Int
+    let totalPages: Int
     @State private var input = ""
+
+    // When PDF pages == question count, the quiz follows the scroll position
+    private var synced: Bool { totalPages == model.targetCount }
+    private var viewingQ: Int { synced ? currentPage : model.current }
+    private var viewingQAnswered: Bool { viewingQ < model.current }
+    private var viewingQFuture: Bool { synced && viewingQ > model.current }
     @State private var feedbackText  = ""
     @State private var feedbackColor: Color = .qSubtext
     @State private var lastSubmitted: Character? = nil
@@ -2253,27 +2263,28 @@ struct QuizActiveView: View {
             HStack(spacing: 0) {
                 // ── Left cluster ──────────────────────────────────────────
                 HStack(spacing: 10) {
-                    Text("Q\(model.current + 1)/\(model.targetCount)")
-                        .font(.system(size: 14, weight: .bold)).foregroundColor(.qText)
+                    Text("Q\(viewingQ + 1)/\(model.targetCount)")
+                        .font(.system(size: 18, weight: .bold)).foregroundColor(.qText)
 
-                    let currentIsFlagged = model.flags.contains(model.current)
+                    let isFlagged = model.flags.contains(viewingQ)
                     Button {
-                        model.toggleFlag(model.current)
+                        model.toggleFlag(viewingQ)
                     } label: {
-                        Image(systemName: currentIsFlagged ? "flag.fill" : "flag")
+                        Image(systemName: isFlagged ? "flag.fill" : "flag")
                             .font(.system(size: 12))
-                            .foregroundColor(currentIsFlagged ? .orange : .qSubtext)
+                            .foregroundColor(isFlagged ? .orange : .qSubtext)
                     }
                     .buttonStyle(.plain)
-                    .help(currentIsFlagged ? "Unflag this question" : "Flag this question")
+                    .help(isFlagged ? "Unflag Q\(viewingQ + 1)" : "Flag Q\(viewingQ + 1)")
 
                     TextField("", text: $input)
                         .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.qText).multilineTextAlignment(.center)
+                        .foregroundColor(viewingQAnswered ? .qAccent : .qText).multilineTextAlignment(.center)
                         .frame(width: 40).padding(.vertical, 5)
                         .background(Color.qSurface)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(viewingQAnswered ? Color.qAccent.opacity(0.5) : Color.qBorder, lineWidth: 1))
                         .focused($focused)
+                        .disabled(viewingQFuture)
                         .onChange(of: focused) { _, val in model.inputFocused = val }
                         .onChange(of: input) { _, val in
                             if let c = val.uppercased().last(where: { $0.isLetter }) { submitAnswer(c) }
@@ -2378,7 +2389,7 @@ struct QuizActiveView: View {
                         return s
                     }()
                     Text(centerText)
-                        .font(.system(size: 14, weight: .bold))
+                        .font(.system(size: 17, weight: .bold))
                         .foregroundColor(centerActive ? feedbackColor : .qText)
                         .lineLimit(1)
                 }
@@ -2392,19 +2403,17 @@ struct QuizActiveView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: model.revealScore ? "eye.fill" : "eye.slash.fill")
-                                Text(model.revealScore ? "see ur score?" : "don't show score")
+                                Text(model.revealScore ? "score on" : "score off")
                                     .font(.system(size: 14, weight: .semibold))
                             }
                         }
                         .buttonStyle(.bordered)
                         .foregroundColor(model.revealScore ? .qAccent : .qSubtext)
-                        .disabled(!model.revealFeedback)
-                        .help(model.revealFeedback ? (model.revealScore ? "Hide score" : "Show score") : "Enable feedback to show score")
+                        .help(model.revealScore ? "Hide score" : "Show score")
 
                         // Feedback toggle — second
                         Button {
                             model.revealFeedback.toggle()
-                            if !model.revealFeedback { model.revealScore = false }
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: model.revealFeedback ? "checkmark.circle.fill" : "checkmark.circle")
@@ -2452,7 +2461,7 @@ struct QuizActiveView: View {
             }
 
             if showNotes {
-                NotesPanel(model: model, notesAllView: $notesAllView, currentQ: max(0, model.current - 1))
+                NotesPanel(model: model, notesAllView: $notesAllView, currentQ: min(viewingQ, max(0, model.current - 1)))
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -2469,11 +2478,15 @@ struct QuizActiveView: View {
     @ViewBuilder private func logRow(_ e: QuizEntry) -> some View {
         let idx = e.number - 1
         HStack(spacing: 0) {
-            if model.flags.contains(idx) {
-                Image(systemName: "flag.fill")
-                    .font(.system(size: 9)).foregroundColor(.orange)
-                    .padding(.trailing, 4)
+            Button {
+                model.toggleFlag(idx)
+            } label: {
+                Image(systemName: model.flags.contains(idx) ? "flag.fill" : "flag")
+                    .font(.system(size: 9))
+                    .foregroundColor(model.flags.contains(idx) ? .orange : .qSubtext.opacity(0.4))
             }
+            .buttonStyle(.plain)
+            .padding(.trailing, 4)
             Text(String(format: "Q%02d  ", e.number)).foregroundColor(.qSubtext)
             if model.trackingOnly || !model.revealScore {
                 Text(String(e.given)).foregroundColor(.qText)
@@ -2516,13 +2529,23 @@ struct QuizActiveView: View {
     }
 
     private func submitAnswer(_ c: Character) {
-        model.submit(c); input = ""; lastSubmitted = c
-        if !model.trackingOnly, let last = model.results.last {
-            feedbackText  = last.ok
-                ? "✓  correct   \(model.score)/\(model.total)  \(String(format: "%.1f", model.pct))%"
-                : "✗   \(model.score)/\(model.total)  \(String(format: "%.1f", model.pct))%"
-            feedbackColor = last.ok ? .qGreen : .qRed
-            lastCorrect   = last.ok ? nil : last.correct
+        input = ""
+        if viewingQAnswered {
+            // Editing a previous answer (page sync or log popover)
+            model.changeAnswer(viewingQ, to: c)
+            lastSubmitted = c
+            feedbackText = model.lastFeedbackText
+            feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
+            lastCorrect = model.results[viewingQ].ok ? nil : model.results[viewingQ].correct
+        } else {
+            model.submit(c); lastSubmitted = c
+            if !model.trackingOnly, let last = model.results.last {
+                feedbackText  = last.ok
+                    ? "✓  correct   \(model.score)/\(model.total)  \(String(format: "%.1f", model.pct))%"
+                    : "✗   \(model.score)/\(model.total)  \(String(format: "%.1f", model.pct))%"
+                feedbackColor = last.ok ? .qGreen : .qRed
+                lastCorrect   = last.ok ? nil : last.correct
+            }
         }
         DispatchQueue.main.async { focused = true }
     }
