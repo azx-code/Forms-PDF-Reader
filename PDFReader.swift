@@ -1889,7 +1889,7 @@ struct PDFReaderView: View {
     @State private var findQuery = ""
     @State private var showLabValues = false
     @State private var toolbarWidth: CGFloat = 900
-    private var toolbarCompact: Bool { toolbarWidth < 800 }
+    private var toolbarCompact: Bool { toolbarWidth < 950 }
     @State private var quizDataRestored = false
     @State private var showTimerPopover = false
     @State private var timerNudgeDone = false
@@ -1929,7 +1929,7 @@ struct PDFReaderView: View {
                 Button { currentPage -= 1 } label: { Image(systemName: "chevron.left") }
                     .disabled(currentPage == 0)
 
-                PageTextField(currentPage: $currentPage, totalPages: totalPages)
+                PageTextField(currentPage: $currentPage, totalPages: totalPages, compact: toolbarCompact)
 
                 Button { currentPage += 1 } label: { Image(systemName: "chevron.right") }
                     .disabled(currentPage >= totalPages - 1)
@@ -2012,6 +2012,7 @@ struct PDFReaderView: View {
                             Text("Track my answers").font(.system(size: 12, weight: .semibold)).lineLimit(1)
                         }
                     }
+                    .fixedSize()
                     .foregroundStyle(Color(red: 0.88, green: 0.95, blue: 1.0))
                     .padding(.horizontal, toolbarCompact ? 10 : 20).padding(.vertical, 6)
                     .background(showQuiz ? bgActive : bgIdle)
@@ -2250,7 +2251,7 @@ struct ZoomTextField: View {
                 }
             Text("%").foregroundStyle(.secondary).lineLimit(1)
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .fixedSize()
         .onChange(of: host.currentScale) { _, scale in
             if !focused { text = "\(Int(scale * 100))" }
         }
@@ -2272,23 +2273,26 @@ struct ZoomTextField: View {
 struct PageTextField: View {
     @Binding var currentPage: Int
     let totalPages: Int
+    var compact: Bool = false
     @State private var text = "1"
     @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 4) {
-            Text("Page").foregroundStyle(.secondary).lineLimit(1)
+            if !compact {
+                Text("Page").foregroundStyle(.secondary).lineLimit(1)
+            }
             TextField("", text: $text)
-                .frame(width: 36)
+                .frame(width: 32)
                 .multilineTextAlignment(.center)
                 .focused($focused)
                 .onSubmit { commit() }
                 .onChange(of: focused) { _, isFocused in
                     if !isFocused { DispatchQueue.main.async { commit() } }
                 }
-            Text("of \(totalPages)").foregroundStyle(.secondary).lineLimit(1)
+            Text(compact ? "/\(totalPages)" : "of \(totalPages)").foregroundStyle(.secondary).lineLimit(1)
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .fixedSize()
         .monospacedDigit()
         .onChange(of: currentPage) { _, page in
             if !focused { text = "\(page + 1)" }
@@ -3131,13 +3135,21 @@ struct QuizActiveView: View {
     @State private var pastAnswersText = ""
     @FocusState private var focused: Bool
     @State private var panelWidth: CGFloat = 900
-    private var compact: Bool { panelWidth < 800 }
+    private var compact: Bool { panelWidth < 620 }
+    private var quizWide: Bool { panelWidth >= 1200 }
 
     @ViewBuilder private var toolsButton: some View {
         Button { showTools.toggle() } label: {
-            HStack(spacing: 3) {
-                Text("tools").font(.system(size: compact ? 12 : 14, weight: .bold)).foregroundColor(.qSubtext).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundColor(.qSubtext)
+            if compact {
+                VStack(spacing: 0) {
+                    Text("to").font(.system(size: 10, weight: .bold)).foregroundColor(.qSubtext)
+                    Text("ls").font(.system(size: 10, weight: .bold)).foregroundColor(.qSubtext)
+                }
+            } else {
+                HStack(spacing: 3) {
+                    Text("tools").font(.system(size: 14, weight: .bold)).foregroundColor(.qSubtext).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundColor(.qSubtext)
+                }
             }
         }
         .buttonStyle(.plain)
@@ -3276,6 +3288,22 @@ struct QuizActiveView: View {
         if model.trackingOnly { return " " }
         guard !feedbackText.isEmpty else { return " " }
         if !model.revealFeedback && !model.revealScore { return " " }
+        if !quizWide {
+            // Narrow: just icon (✓/✗) and/or bare percentage
+            let icon = String(feedbackText.first ?? " ")
+            let parts = feedbackText.components(separatedBy: "   ")
+            let scorePart = parts.count > 1 ? parts[1] : ""
+            var pct = scorePart.components(separatedBy: "  ").last ?? scorePart
+            if panelWidth < 1000, let d = Double(pct.replacingOccurrences(of: "%", with: "")) {
+                pct = "\(Int(d.rounded()))%"
+            }
+            switch (model.revealFeedback, model.revealScore) {
+            case (true,  true):  return "\(icon)  \(pct)"
+            case (true,  false): return icon
+            case (false, true):  return pct.isEmpty ? " " : pct
+            default:             return " "
+            }
+        }
         if !model.revealFeedback {
             let parts = feedbackText.components(separatedBy: "   ")
             return parts.dropFirst().joined(separator: "   ").trimmingCharacters(in: .whitespaces)
@@ -3365,25 +3393,30 @@ struct QuizActiveView: View {
                         }
                         .onChange(of: viewingQ) { _, q in syncInput(q) }
 
-                    if !compact {
-                        Text(visibleFeedback)
-                            .font(.system(size: 14, weight: .bold)).foregroundColor(feedbackColor)
-                    }
+                    Text(visibleFeedback)
+                        .font(.system(size: compact ? 12 : 14, weight: .bold)).foregroundColor(feedbackColor)
 
-                    if !compact {
-                    Button("undo") {
+                    Button {
                         model.postQuiz = false
                         model.undo()
                         syncInput(viewingQ)
                         feedbackText = model.lastFeedbackText
                         feedbackColor = feedbackColorFor(model.lastFeedbackCorrect)
                         lastSubmitted = nil; lastCorrect = nil
+                    } label: {
+                        if compact {
+                            VStack(spacing: 0) {
+                                Text("un").font(.system(size: 10, weight: .bold))
+                                Text("do").font(.system(size: 10, weight: .bold))
+                            }
+                        } else {
+                            Text("undo").font(.system(size: 14, weight: .bold))
+                        }
                     }
                     .keyboardShortcut("u", modifiers: .command)
-                    .buttonStyle(.plain).font(.system(size: 14, weight: .bold))
+                    .buttonStyle(.plain)
                     .foregroundColor(model.results.isEmpty ? Color.qSubtext.opacity(0.3) : (model.postQuiz ? .qYellow : .qSubtext))
                     .disabled(model.results.isEmpty)
-                    } // end if !compact
 
                     // copy moved to right cluster
 
@@ -3435,14 +3468,17 @@ struct QuizActiveView: View {
                         }
                     } label: {
                         let isPreSubmit = model.phase == .preSubmit
+                        let narrowLog = panelWidth < 1000
                         HStack(spacing: 5) {
-                            Text(isPreSubmit ? "dismiss" : (compact ? "log" : "log/notes"))
-                                .font(.system(size: compact ? 12 : 14, weight: .bold))
+                            Text(isPreSubmit ? "dismiss" : (narrowLog ? "log" : "log/notes"))
+                                .font(.system(size: compact ? 10 : 14, weight: .bold))
                                 .foregroundColor(isPreSubmit ? .qAccent : (showLog ? .qAccent : .qSubtext))
                                 .lineLimit(1)
-                            Image(systemName: isPreSubmit ? "xmark" : "list.clipboard.fill")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(isPreSubmit ? .qAccent : (showLog ? .qAccent : .qSubtext))
+                            if !narrowLog || isPreSubmit {
+                                Image(systemName: isPreSubmit ? "xmark" : "list.clipboard.fill")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(isPreSubmit ? .qAccent : (showLog ? .qAccent : .qSubtext))
+                            }
                         }
                     }
                     .buttonStyle(.plain)
@@ -3480,23 +3516,24 @@ struct QuizActiveView: View {
                             .padding(.horizontal, 14).padding(.vertical, 10)
                             .background(Color.qBg).preferredColorScheme(.dark)
                     }
-                } else if !compact, let letter = lastSubmitted {
+                } else if let letter = lastSubmitted {
                     let centerActive = !model.trackingOnly && model.revealFeedback
-                    let showWrongAnswer = centerActive && feedbackColor == .qRed
                     let centerText: String = {
-                        var s = "Q\(lastSubmittedQ + 1): you entered \(String(letter))"
-                        if showWrongAnswer, let correct = lastCorrect {
-                            s += " (answer = \(String(correct)))"
+                        if panelWidth < 900 {
+                            return "Q\(lastSubmittedQ + 1): \(String(letter))"
                         }
-                        return s
+                        if !model.trackingOnly && model.revealFeedback, let correct = lastCorrect {
+                            return "Q\(lastSubmittedQ + 1): correct answer was \(String(correct))"
+                        }
+                        return "Q\(lastSubmittedQ + 1): you entered \(String(letter))"
                     }()
                     Text(centerText)
-                        .font(.system(size: model.revealFeedback ? 16 : 17, weight: .bold))
+                        .font(.system(size: compact ? 13 : (model.revealFeedback ? 16 : 17), weight: .bold))
                         .foregroundColor(centerActive ? feedbackColor : .qText)
                         .lineLimit(1)
                         .overlay(
                             Text(centerText)
-                                .font(.system(size: model.revealFeedback ? 16 : 17, weight: .bold))
+                                .font(.system(size: compact ? 13 : (model.revealFeedback ? 16 : 17), weight: .bold))
                                 .foregroundColor(centerActive ? feedbackColor : .qAccent)
                                 .opacity(flashOpacity)
                                 .allowsHitTesting(false)
@@ -3508,7 +3545,7 @@ struct QuizActiveView: View {
                     if !model.postQuiz {
                         Button { copySheet() } label: {
                             HStack(spacing: 5) {
-                                Text(copied ? "copied!" : (compact ? "copy" : "copy to spreadsheet"))
+                                Text(copied ? "copied!" : (panelWidth < 1000 ? "copy" : "copy to spreadsheet"))
                                     .font(.system(size: compact ? 12 : 14, weight: .bold))
                                     .lineLimit(1)
                                 if !compact {
@@ -4509,6 +4546,21 @@ struct SettingsView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Divider().padding(.vertical, 10)
+
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: Bundle.main.executablePath ?? Bundle.main.bundlePath),
+               let modDate = attrs[.modificationDate] as? Date {
+                let fmt: DateFormatter = {
+                    let f = DateFormatter()
+                    f.dateStyle = .medium
+                    f.timeStyle = .short
+                    return f
+                }()
+                Text("Last modified: \(fmt.string(from: modDate))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(20)
         .frame(width: 440)
