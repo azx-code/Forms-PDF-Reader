@@ -131,9 +131,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         field.placeholderString = "Your name"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
-        alert.runModal()
-        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-        completion(name.isEmpty ? "Unknown" : name)
+        var name = ""
+        while name.isEmpty {
+            alert.runModal()
+            name = field.stringValue.trimmingCharacters(in: .whitespaces)
+            if name.isEmpty {
+                alert.informativeText = "Please enter your name to continue."
+            }
+        }
+        completion(name)
     }
 
     private func sbUpsert(deviceId: String, name: String, isNew: Bool) {
