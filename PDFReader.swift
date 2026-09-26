@@ -3168,25 +3168,25 @@ struct QuizSetupView: View {
                 if !model.trackingOnly {
                     VStack(alignment: .leading, spacing: 8) {
                         // Mode toggle
-                        HStack(spacing: 0) {
+                        HStack(spacing: 20) {
                             ForEach([true, false], id: \.self) { coded in
                                 Button { useCoded = coded; keyText = "" } label: {
-                                    HStack(spacing: 4) {
-                                        Text(coded ? "Coded" : "Plain text")
-                                            .font(.system(size: 11, weight: .semibold))
-                                        if coded {
-                                            Text("recommended")
-                                                .font(.system(size: 9, weight: .medium))
-                                                .padding(.horizontal, 5).padding(.vertical, 2)
-                                                .background(Color(red: 0.165, green: 0.247, blue: 0.373))
-                                                .cornerRadius(4)
+                                    VStack(spacing: 4) {
+                                        HStack(spacing: 6) {
+                                            Text(coded ? "Coded" : "Plain text")
+                                                .font(.system(size: 12, weight: useCoded == coded ? .semibold : .regular))
+                                                .foregroundColor(useCoded == coded ? .qText : .qSubtext)
+                                            if coded {
+                                                Text("recommended")
+                                                    .font(.system(size: 9, weight: .medium))
+                                                    .foregroundColor(Color(red: 0.54, green: 0.67, blue: 0.86))
+                                            }
                                         }
+                                        Rectangle()
+                                            .frame(height: 2)
+                                            .foregroundColor(useCoded == coded ? Color(red: 0.54, green: 0.67, blue: 0.86) : Color.clear)
                                     }
-                                    .foregroundColor(useCoded == coded ? .qText : Color(NSColor.secondaryLabelColor))
-                                    .padding(.horizontal, 10).padding(.vertical, 6)
-                                    .background(useCoded == coded ? Color.qBorder : Color.qSurface)
-                                    .cornerRadius(6)
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.qBorder, lineWidth: 1))
+                                    .padding(.horizontal, 4)
                                 }
                                 .buttonStyle(.plain)
                             }
