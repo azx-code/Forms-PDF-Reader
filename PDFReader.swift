@@ -3329,6 +3329,7 @@ struct QuizActiveView: View {
     @State private var showAddKey = false
     @State private var addKeyText = ""
     @State private var addKeyPromptCopied = false
+    @State private var addKeyUseCoded = true
     @State private var showTools = false
     @State private var toolsRestartConfirm = false
     @State private var pastAnswersText = ""
@@ -3625,10 +3626,28 @@ struct QuizActiveView: View {
                         }
                         .buttonStyle(.plain)
                         .popover(isPresented: $showAddKey, arrowEdge: .bottom) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
+                            VStack(alignment: .leading, spacing: 10) {
+                                // Tab toggle
+                                HStack(spacing: 16) {
+                                    ForEach([true, false], id: \.self) { coded in
+                                        Button { addKeyUseCoded = coded; addKeyText = "" } label: {
+                                            VStack(spacing: 3) {
+                                                Text(coded ? "Coded (ChatGPT)" : "Plain text")
+                                                    .font(.system(size: 11, weight: addKeyUseCoded == coded ? .semibold : .regular))
+                                                    .foregroundColor(addKeyUseCoded == coded ? .qText : .qSubtext)
+                                                Rectangle().frame(height: 2)
+                                                    .foregroundColor(addKeyUseCoded == coded ? Color(red: 0.54, green: 0.67, blue: 0.86) : Color.clear)
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
                                     Spacer()
+                                    let addKeyLetters = addKeyUseCoded ? decodeCipher(addKeyText) : Array(addKeyText.uppercased().filter { $0.isLetter })
+                                    Text("\(addKeyLetters.count)/\(model.targetCount)").font(.system(size: 11))
+                                        .foregroundColor(addKeyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                                }
+
+                                if addKeyUseCoded {
                                     Button {
                                         NSPasteboard.general.clearContents()
                                         NSPasteboard.general.setString(kCipherPrompt, forType: .string)
@@ -3640,22 +3659,31 @@ struct QuizActiveView: View {
                                             .foregroundColor(addKeyPromptCopied ? .qGreen : Color(red: 0.54, green: 0.67, blue: 0.86))
                                     }
                                     .buttonStyle(.plain)
-                                    let addKeyLetters = decodeCipher(addKeyText)
-                                    Text("\(addKeyLetters.count)/\(model.targetCount)").font(.system(size: 11))
-                                        .foregroundColor(addKeyLetters.count == model.targetCount ? .qGreen : .qSubtext)
-                                }
-                                SecureField("paste coded key here", text: $addKeyText)
-                                    .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
-                                    .textFieldStyle(.plain).padding(8)
-                                    .frame(width: 200, height: 36)
-                                    .background(Color.qSurface)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
-                                    .onChange(of: addKeyText) { _, _ in
-                                        let letters = decodeCipher(addKeyText)
-                                        if letters.count == model.targetCount {
-                                            model.addKey(letters); showAddKey = false; addKeyText = ""
+                                    SecureField("paste coded key here", text: $addKeyText)
+                                        .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                                        .textFieldStyle(.plain).padding(8)
+                                        .frame(width: 220, height: 34)
+                                        .background(Color.qSurface)
+                                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                                        .onChange(of: addKeyText) { _, _ in
+                                            let letters = decodeCipher(addKeyText)
+                                            if letters.count == model.targetCount {
+                                                model.addKey(letters); showAddKey = false; addKeyText = ""
+                                            }
                                         }
-                                    }
+                                } else {
+                                    TextEditor(text: $addKeyText)
+                                        .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                                        .scrollContentBackground(.hidden).background(Color.qSurface)
+                                        .frame(width: 220, height: 52)
+                                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                                        .onChange(of: addKeyText) { _, _ in
+                                            let letters = Array(addKeyText.uppercased().filter { $0.isLetter })
+                                            if letters.count == model.targetCount {
+                                                model.addKey(letters); showAddKey = false; addKeyText = ""
+                                            }
+                                        }
+                                }
                             }
                             .padding(12).background(Color.qBg).preferredColorScheme(.dark)
                         }
