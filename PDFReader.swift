@@ -3577,17 +3577,12 @@ struct QuizActiveView: View {
                                     .scrollContentBackground(.hidden).background(Color.qSurface)
                                     .frame(width: 200, height: 52)
                                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
-                                Button {
-                                    model.addKey(addKeyLetters); showAddKey = false; addKeyText = ""
-                                } label: {
-                                    Text("apply key →")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(addKeyLetters.count == model.targetCount ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
-                                        .padding(.horizontal, 10).padding(.vertical, 6)
-                                        .background(addKeyLetters.count == model.targetCount ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
-                                        .cornerRadius(6)
-                                }
-                                .buttonStyle(.plain).disabled(addKeyLetters.count != model.targetCount)
+                                    .onChange(of: addKeyText) { _, _ in
+                                        let letters = Array(addKeyText.uppercased().filter { $0.isLetter })
+                                        if letters.count == model.targetCount {
+                                            model.addKey(letters); showAddKey = false; addKeyText = ""
+                                        }
+                                    }
                             }
                             .padding(12).background(Color.qBg).preferredColorScheme(.dark)
                         }
@@ -4357,18 +4352,13 @@ struct QuizSummaryView: View {
                     .scrollContentBackground(.hidden).background(Color.qSurface)
                     .frame(width: 200, height: 52)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
-                Button {
-                    model.addKey(addKeyLetters); showAddKey = false; addKeyText = ""
-                    showResults = true; model.revealScore = true; model.revealFeedback = true
-                } label: {
-                    Text("apply key →")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(addKeyLetters.count == model.targetCount ? Color(red: 0.54, green: 0.67, blue: 0.86) : .qSubtext)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(addKeyLetters.count == model.targetCount ? Color(red: 0.165, green: 0.247, blue: 0.373) : Color.qBorder)
-                        .cornerRadius(6)
-                }
-                .buttonStyle(.plain).disabled(addKeyLetters.count != model.targetCount)
+                    .onChange(of: addKeyText) { _, _ in
+                        let letters = Array(addKeyText.uppercased().filter { $0.isLetter })
+                        if letters.count == model.targetCount {
+                            model.addKey(letters); showAddKey = false; addKeyText = ""
+                            showResults = true; model.revealScore = true; model.revealFeedback = true
+                        }
+                    }
             }
             .padding(12).background(Color.qBg).preferredColorScheme(.dark)
         }
