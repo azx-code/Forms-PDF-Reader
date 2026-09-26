@@ -3122,9 +3122,10 @@ struct QuizModeSelectView: View {
 
 private let kAnswerCipher: [Character: Character] = [
     "K":"A","R":"B","Z":"C","N":"D","W":"E",
-    "X":"F","P":"G","M":"H","T":"I","Q":"J"
+    "X":"F","P":"G","V":"H","T":"I","Q":"J",
+    "S":"K","U":"L","Y":"M"
 ]
-private let kCipherPrompt = "Replace each answer letter with its code: A=K, B=R, C=Z, D=N, E=W, F=X, G=P, H=M, I=T, J=Q. Output only the coded letters as one continuous string with no spaces."
+private let kCipherPrompt = "Replace each answer letter with its code: A=K, B=R, C=Z, D=N, E=W, F=X, G=P, H=V, I=T, J=Q, K=S, L=U, M=Y. Output only the coded letters as one continuous string with no spaces."
 
 private func decodeCipher(_ text: String) -> [Character] {
     Array(text.uppercased().filter { $0.isLetter }.map { kAnswerCipher[$0] ?? $0 })
