@@ -129,7 +129,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let btn = alert.addButton(withTitle: "Get Started")
         btn.isEnabled = false
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        field.placeholderString = "Your name (at least 3 letters)"
+        field.placeholderString = "Your name"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         NotificationCenter.default.addObserver(forName: NSTextField.textDidChangeNotification, object: field, queue: .main) { _ in
