@@ -3200,7 +3200,7 @@ struct QuizSetupView: View {
 
                         if useCoded {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Use AI to encode your answers so you never accidentally see them.")
+                                Text("Use ChatGPT to encode your answers so you never accidentally see them. (This only works with ChatGPT — not Claude or other AI tools.)")
                                     .font(.system(size: 11)).foregroundColor(.qSubtext).fixedSize(horizontal: false, vertical: true)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("1.  Click \"copy AI prompt\" below")
