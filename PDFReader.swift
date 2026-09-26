@@ -60,7 +60,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var allHosts: (() -> [PDFViewHost]) = { [] }
     var closeCurrentTabAction: (() -> Void)?
     @Published var updateBanner: String? = nil
-    @Published var userName: String? = UserDefaults.standard.string(forKey: "sb_name")
+    @Published var userName: String? = {
+        let v = UserDefaults.standard.string(forKey: "sb_name") ?? ""
+        return v.isEmpty || v == "Unknown" ? nil : v
+    }()
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let dirty = allHosts().filter { $0.hasUnsavedChanges || $0.hasUnsavedQuizData }
@@ -105,7 +108,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             defaults.set(UUID().uuidString, forKey: "sb_device_id")
         }
         let deviceId = defaults.string(forKey: "sb_device_id")!
-        let isFirstTime = defaults.string(forKey: "sb_name") == nil
+        let stored = defaults.string(forKey: "sb_name") ?? ""
+        let isFirstTime = stored.isEmpty || stored == "Unknown"
 
         if isFirstTime {
             showNamePrompt { [weak self] name in
