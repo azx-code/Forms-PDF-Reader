@@ -126,20 +126,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         let alert = NSAlert()
         alert.messageText = "Welcome to Forms PDF Reader!"
         alert.informativeText = "Enter your name to get started!"
-        alert.addButton(withTitle: "Get Started")
+        let btn = alert.addButton(withTitle: "Get Started")
+        btn.isEnabled = false
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        field.placeholderString = "Your name"
+        field.placeholderString = "Your name (at least 3 letters)"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
-        var name = ""
-        while name.isEmpty {
-            alert.runModal()
-            name = field.stringValue.trimmingCharacters(in: .whitespaces)
-            if name.isEmpty {
-                alert.informativeText = "Please enter your name to continue."
-            }
+        NotificationCenter.default.addObserver(forName: NSTextField.textDidChangeNotification, object: field, queue: .main) { _ in
+            btn.isEnabled = field.stringValue.trimmingCharacters(in: .whitespaces).count >= 3
         }
-        completion(name)
+        alert.runModal()
+        completion(field.stringValue.trimmingCharacters(in: .whitespaces))
     }
 
     private func sbUpsert(deviceId: String, name: String, isNew: Bool) {
@@ -1862,12 +1859,7 @@ struct ContentView: View {
             appDelegate.allHosts = { docs.map { $0.host } }
             appDelegate.closeCurrentTabAction = { closeCurrentTab() }
         }
-        .navigationTitle({
-            if docs.isEmpty {
-                return appDelegate.userName.map { "Forms PDF Reader — \($0)" } ?? "Forms PDF Reader"
-            }
-            return docs[activeIndex].title
-        }())
+        .navigationTitle(appDelegate.userName.map { "Forms PDF Reader — \($0)" } ?? "Forms PDF Reader")
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button("Open…") { openFile() }
