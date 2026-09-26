@@ -128,6 +128,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         alert.informativeText = "Enter your name to get started!"
         let btn = alert.addButton(withTitle: "Get Started")
         btn.isEnabled = false
+        alert.addButton(withTitle: "Quit")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
         field.placeholderString = "Your name"
         alert.accessoryView = field
@@ -135,7 +136,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NotificationCenter.default.addObserver(forName: NSTextField.textDidChangeNotification, object: field, queue: .main) { _ in
             btn.isEnabled = field.stringValue.trimmingCharacters(in: .whitespaces).count >= 3
         }
-        alert.runModal()
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn { NSApp.terminate(nil) }
         completion(field.stringValue.trimmingCharacters(in: .whitespaces))
     }
 
