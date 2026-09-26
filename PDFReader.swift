@@ -1213,7 +1213,7 @@ class CalculatorPanel: ObservableObject {
 class QuizTimerModel: ObservableObject {
     enum TimerMode { case overall, perQuestion }
 
-    @Published var mode: TimerMode = .overall
+    @Published var mode: TimerMode = .perQuestion
     @Published var totalMinutes: Int = 75
     @Published var perQSecs: Int = 90
     @Published var targetCount: Int = 50
@@ -1458,19 +1458,6 @@ private struct TimerPopoverView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Quiz-started nudge
-            if quizIsActive && !model.isRunning {
-                HStack(spacing: 6) {
-                    Image(systemName: "clock.badge.exclamationmark").foregroundStyle(Color.accentColor)
-                    Text("Quiz started — start your timer!")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8).padding(.horizontal, 14)
-                .background(Color.accentColor.opacity(0.12))
-                Divider()
-            }
-
             // Top controls
             HStack(spacing: 8) {
                 HStack(spacing: 0) {
@@ -1578,6 +1565,10 @@ private struct TimerPopoverView: View {
                     if model.mode == .overall { model.resetOverall() } else { model.resetPerQ() }
                 }
                 .font(.system(size: 12)).foregroundStyle(.secondary)
+                Button("Stop") {
+                    model.resetOverall(); model.resetPerQ()
+                }
+                .font(.system(size: 12)).foregroundStyle(.red.opacity(0.7))
             }
             .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, 10)
         }
@@ -2212,10 +2203,6 @@ struct PDFReaderView: View {
         .onChange(of: quizModel.phase) { _, newPhase in
             if newPhase == .modeSelect { host.hasUnsavedQuizData = false }
             else if newPhase != .modeSelect { host.hasUnsavedQuizData = true }
-            if newPhase == .active && !timerNudgeDone && !timerModel.isRunning {
-                timerNudgeDone = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showTimerPopover = true }
-            }
             if newPhase == .modeSelect { timerNudgeDone = false }
         }
         .onAppear {
@@ -3110,7 +3097,7 @@ struct QuizModeSelectView: View {
                 modeCard(
                     title: "Without answer key",
                     subtitle: "Log what you answered — add a key later if you want"
-                ) { model.trackingOnly = true; model.phase = .setup }
+                ) { model.trackingOnly = true; model.startTracking() }
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
             Spacer()
@@ -3134,7 +3121,7 @@ struct QuizModeSelectView: View {
 }
 
 private let kAnswerCipher: [Character: Character] = ["K":"A","R":"B","Z":"C","N":"D","W":"E"]
-private let kCipherPrompt = "Upload your answer key PDF to Claude (claude.ai) or ChatGPT. Send this exact message:\n\nReplace each answer with its code: A=K, B=R, C=Z, D=N, E=W. Give me only the coded letters as one continuous string with no spaces.\n\nThen paste the result into the answer key field."
+private let kCipherPrompt = "Replace each answer with its code: A=K, B=R, C=Z, D=N, E=W. Give me only the coded letters as one continuous string with no spaces."
 
 private func decodeCipher(_ text: String) -> [Character] {
     Array(text.uppercased().filter { $0.isLetter }.map { kAnswerCipher[$0] ?? $0 })
@@ -3191,10 +3178,11 @@ struct QuizSetupView: View {
                                                 .cornerRadius(4)
                                         }
                                     }
-                                    .foregroundColor(useCoded == coded ? .qText : .qSubtext)
+                                    .foregroundColor(useCoded == coded ? .qText : Color(NSColor.secondaryLabelColor))
                                     .padding(.horizontal, 10).padding(.vertical, 6)
-                                    .background(useCoded == coded ? Color.qBorder : Color.clear)
+                                    .background(useCoded == coded ? Color.qBorder : Color.qSurface)
                                     .cornerRadius(6)
+                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.qBorder, lineWidth: 1))
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -3206,8 +3194,8 @@ struct QuizSetupView: View {
                                     .font(.system(size: 11)).foregroundColor(.qSubtext).fixedSize(horizontal: false, vertical: true)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("1.  Click \"copy AI prompt\" below")
-                                    Text("2.  Upload your answer key PDF to Claude (claude.ai) or ChatGPT")
-                                    Text("3.  Paste the coded result into the field — it'll look like random letters")
+                                    Text("2.  Paste the prompt along with your answer key PDF into Claude or ChatGPT")
+                                    Text("3.  Paste the coded result here — it'll look like random letters")
                                 }
                                 .font(.system(size: 11)).foregroundColor(.qSubtext)
                                 HStack {
