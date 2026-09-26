@@ -3143,14 +3143,15 @@ private func decodeCipher(_ text: String) -> [Character] {
 struct QuizSetupView: View {
     @EnvironmentObject var model: QuizModel
     @State private var keyText  = ""
-    @State private var doneText = ""
     @State private var promptCopied = false
+    @State private var useCoded = true
 
-    private var keyLetters:  [Character] { decodeCipher(keyText) }
-    private var doneLetters: [Character] { Array(doneText.uppercased().filter { $0.isLetter || $0 == "-" }) }
+    private var keyLetters: [Character] {
+        useCoded ? decodeCipher(keyText) : Array(keyText.uppercased().filter { $0.isLetter })
+    }
     private var ready: Bool {
-        if model.trackingOnly { return doneLetters.count <= model.targetCount }
-        return keyLetters.count == model.targetCount && doneLetters.count <= model.targetCount
+        if model.trackingOnly { return true }
+        return keyLetters.count == model.targetCount
     }
 
     var body: some View {
@@ -3174,60 +3175,93 @@ struct QuizSetupView: View {
 
                 // Answer key (hidden in tracking mode)
                 if !model.trackingOnly {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Answer key").font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
-                            Spacer()
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(kCipherPrompt, forType: .string)
-                                promptCopied = true
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { promptCopied = false }
-                            } label: {
-                                Text(promptCopied ? "✓ prompt copied" : "copy AI prompt")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(promptCopied ? .qGreen : Color(red: 0.54, green: 0.67, blue: 0.86))
+                    VStack(alignment: .leading, spacing: 8) {
+                        // Mode toggle
+                        HStack(spacing: 0) {
+                            ForEach([true, false], id: \.self) { coded in
+                                Button { useCoded = coded; keyText = "" } label: {
+                                    HStack(spacing: 4) {
+                                        Text(coded ? "Coded" : "Plain text")
+                                            .font(.system(size: 11, weight: .semibold))
+                                        if coded {
+                                            Text("recommended")
+                                                .font(.system(size: 9, weight: .medium))
+                                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                                .background(Color(red: 0.165, green: 0.247, blue: 0.373))
+                                                .cornerRadius(4)
+                                        }
+                                    }
+                                    .foregroundColor(useCoded == coded ? .qText : .qSubtext)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(useCoded == coded ? Color.qBorder : Color.clear)
+                                    .cornerRadius(6)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
-                            Text("\(keyLetters.count)/\(model.targetCount)").font(.system(size: 11))
-                                .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
                         }
-                        SecureField("paste coded answer key here", text: $keyText)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(.qText)
-                            .textFieldStyle(.plain)
-                            .padding(8)
-                            .frame(height: 36)
-                            .background(Color.qSurface)
-                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
-                        Text("1. Click \"copy AI prompt\" → 2. Upload answer key PDF to Claude/ChatGPT → 3. Paste result here")
-                            .font(.system(size: 10)).foregroundColor(.qSubtext)
-                    }
-                    .frame(width: 400)
-                }
 
-                // Already done
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text("Input any answers to q's you already did (optional)").font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
-                        Spacer()
-                        let n = doneLetters.count
-                        let tgt = model.targetCount
-                        Text(n > tgt ? "max \(tgt)" : n == 0 ? "→Q1" : "→Q\(n+1)").font(.system(size: 11))
-                            .foregroundColor(n > tgt ? .qRed : .qSubtext)
+                        if useCoded {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Use AI to encode your answers so you never accidentally see them.")
+                                    .font(.system(size: 11)).foregroundColor(.qSubtext).fixedSize(horizontal: false, vertical: true)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("1.  Click \"copy AI prompt\" below")
+                                    Text("2.  Upload your answer key PDF to Claude (claude.ai) or ChatGPT")
+                                    Text("3.  Paste the coded result into the field — it'll look like random letters")
+                                }
+                                .font(.system(size: 11)).foregroundColor(.qSubtext)
+                                HStack {
+                                    Button {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(kCipherPrompt, forType: .string)
+                                        promptCopied = true
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { promptCopied = false }
+                                    } label: {
+                                        Text(promptCopied ? "✓ copied" : "copy AI prompt")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(promptCopied ? .qGreen : Color(red: 0.54, green: 0.67, blue: 0.86))
+                                            .padding(.horizontal, 10).padding(.vertical, 5)
+                                            .background(Color(red: 0.165, green: 0.247, blue: 0.373))
+                                            .cornerRadius(5)
+                                    }
+                                    .buttonStyle(.plain)
+                                    Spacer()
+                                    Text("\(keyLetters.count)/\(model.targetCount)")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                                }
+                                SecureField("paste coded answer key here", text: $keyText)
+                                    .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
+                                    .textFieldStyle(.plain).padding(8)
+                                    .frame(height: 34)
+                                    .background(Color.qSurface)
+                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text("Paste your answer key directly (e.g. ABCDEABCDE...)")
+                                        .font(.system(size: 11)).foregroundColor(.qSubtext)
+                                    Spacer()
+                                    Text("\(keyLetters.count)/\(model.targetCount)")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
+                                }
+                                qTextArea($keyText, placeholder: "\"ABCDABDCBACDBDACABDCBDACABDCBDACABDCBDACABDCBDACB\"")
+                            }
+                        }
                     }
-                    qTextArea($doneText, placeholder: "\"ABCDABDCBACDBDACABDC\"")
+                    .frame(width: 420)
                 }
-                .frame(width: 400)
 
                 // Start
                 VStack {
                     Spacer()
                     Button {
                         if model.trackingOnly {
-                            model.startTracking(doneLetters: doneLetters)
+                            model.startTracking(doneLetters: [])
                         } else {
-                            model.start(keyLetters: keyLetters, doneLetters: doneLetters)
+                            model.start(keyLetters: keyLetters, doneLetters: [])
                         }
                     } label: {
                         Text("Start →")
