@@ -59,6 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var performSave: (() -> Void)?
     var allHosts: (() -> [PDFViewHost]) = { [] }
     var closeCurrentTabAction: (() -> Void)?
+    @Published var updateBanner: String? = nil
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let dirty = allHosts().filter { $0.hasUnsavedChanges || $0.hasUnsavedQuizData }
@@ -85,7 +86,86 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.trackLaunch() }
+        checkForUpdate()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    // MARK: - Supabase launch tracking
+    static let BUILD_NUMBER = 6
+    private let sbURL = "https://mkacgyqtlpsmabcmqvwn.supabase.co"
+    private let sbKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1rYWNneXF0bHBzbWFiY21xdnduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzNzAwOTUsImV4cCI6MjEwNTk0NjA5NX0.laX-KotKDEZDpFlAsDo_rNtyrGoLdvl5vEi9L3X-a_g"
+
+    private func trackLaunch() {
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: "sb_device_id") == nil {
+            defaults.set(UUID().uuidString, forKey: "sb_device_id")
+        }
+        let deviceId = defaults.string(forKey: "sb_device_id")!
+        let isFirstTime = defaults.string(forKey: "sb_name") == nil
+
+        if isFirstTime {
+            showNamePrompt { [weak self] name in
+                defaults.set(name, forKey: "sb_name")
+                self?.sbUpsert(deviceId: deviceId, name: name, isNew: true)
+            }
+        } else {
+            sbUpsert(deviceId: deviceId, name: defaults.string(forKey: "sb_name")!, isNew: false)
+        }
+    }
+
+    private func showNamePrompt(completion: @escaping (String) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Welcome to Forms PDF Reader!"
+        alert.informativeText = "Enter your name to get started!"
+        alert.addButton(withTitle: "Get Started")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.placeholderString = "Your name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.runModal()
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        completion(name.isEmpty ? "Unknown" : name)
+    }
+
+    private func sbUpsert(deviceId: String, name: String, isNew: Bool) {
+        guard let url = URL(string: "\(sbURL)/rest/v1/installs") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(sbKey)", forHTTPHeaderField: "Authorization")
+        req.setValue(sbKey, forHTTPHeaderField: "apikey")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+        let now = ISO8601DateFormatter().string(from: Date())
+        var body: [String: Any] = [
+            "device_id": deviceId,
+            "name": name,
+            "last_opened": now,
+            "mac_version": ProcessInfo.processInfo.operatingSystemVersionString
+        ]
+        if isNew { body["first_opened"] = now }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    private func checkForUpdate() {
+        guard let url = URL(string: "\(sbURL)/rest/v1/app_config?id=eq.1&select=min_build,update_message") else { return }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(sbKey)", forHTTPHeaderField: "Authorization")
+        req.setValue(sbKey, forHTTPHeaderField: "apikey")
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data,
+                  let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                  let row = rows.first,
+                  let minBuild = row["min_build"] as? Int,
+                  minBuild > AppDelegate.BUILD_NUMBER,
+                  let message = row["update_message"] as? String,
+                  !message.isEmpty else { return }
+            DispatchQueue.main.async { self.updateBanner = message }
+        }.resume()
+    }
 
     private var settingsWindow: NSWindow?
 
@@ -1701,10 +1781,31 @@ struct DocEntry: Identifiable {
 struct ContentView: View {
     @State private var docs: [DocEntry] = []
     @State private var activeIndex = 0
+    @State private var bannerDismissed = false
     @EnvironmentObject var appDelegate: AppDelegate
 
     var body: some View {
         VStack(spacing: 0) {
+            if let msg = appDelegate.updateBanner, !bannerDismissed {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .foregroundStyle(.white)
+                    Text(msg)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer()
+                    Button { bannerDismissed = true } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.accentColor)
+            }
             if docs.count > 1 {
                 DocTabBar(docs: $docs, activeIndex: $activeIndex)
                 Divider()
