@@ -3133,12 +3133,20 @@ struct QuizModeSelectView: View {
     }
 }
 
+private let kAnswerCipher: [Character: Character] = ["K":"A","R":"B","Z":"C","N":"D","W":"E"]
+private let kCipherPrompt = "Upload your answer key PDF to Claude (claude.ai) or ChatGPT. Send this exact message:\n\nReplace each answer with its code: A=K, B=R, C=Z, D=N, E=W. Give me only the coded letters as one continuous string with no spaces.\n\nThen paste the result into the answer key field."
+
+private func decodeCipher(_ text: String) -> [Character] {
+    Array(text.uppercased().filter { $0.isLetter }.map { kAnswerCipher[$0] ?? $0 })
+}
+
 struct QuizSetupView: View {
     @EnvironmentObject var model: QuizModel
     @State private var keyText  = ""
     @State private var doneText = ""
+    @State private var promptCopied = false
 
-    private var keyLetters:  [Character] { Array(keyText.uppercased().filter  { $0.isLetter }) }
+    private var keyLetters:  [Character] { decodeCipher(keyText) }
     private var doneLetters: [Character] { Array(doneText.uppercased().filter { $0.isLetter || $0 == "-" }) }
     private var ready: Bool {
         if model.trackingOnly { return doneLetters.count <= model.targetCount }
@@ -3170,10 +3178,30 @@ struct QuizSetupView: View {
                         HStack {
                             Text("Answer key").font(.system(size: 12, weight: .bold)).foregroundColor(.qText)
                             Spacer()
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(kCipherPrompt, forType: .string)
+                                promptCopied = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { promptCopied = false }
+                            } label: {
+                                Text(promptCopied ? "✓ prompt copied" : "copy AI prompt")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(promptCopied ? .qGreen : Color(red: 0.54, green: 0.67, blue: 0.86))
+                            }
+                            .buttonStyle(.plain)
                             Text("\(keyLetters.count)/\(model.targetCount)").font(.system(size: 11))
                                 .foregroundColor(keyLetters.count == model.targetCount ? .qGreen : .qSubtext)
                         }
-                        qTextArea($keyText, placeholder: "\"ABCDABDCBACDBDACABDCBDACABDCBDACABDCBDACABDCBDACB\"")
+                        SecureField("paste coded answer key here", text: $keyText)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.qText)
+                            .textFieldStyle(.plain)
+                            .padding(8)
+                            .frame(height: 36)
+                            .background(Color.qSurface)
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
+                        Text("1. Click \"copy AI prompt\" → 2. Upload answer key PDF to Claude/ChatGPT → 3. Paste result here")
+                            .font(.system(size: 10)).foregroundColor(.qSubtext)
                     }
                     .frame(width: 400)
                 }
@@ -3268,6 +3296,7 @@ struct QuizActiveView: View {
     @State private var keyCopied = false
     @State private var showAddKey = false
     @State private var addKeyText = ""
+    @State private var addKeyPromptCopied = false
     @State private var showTools = false
     @State private var toolsRestartConfirm = false
     @State private var pastAnswersText = ""
@@ -3559,7 +3588,6 @@ struct QuizActiveView: View {
                     // copy moved to right cluster
 
                     if model.trackingOnly {
-                        let addKeyLetters = Array(addKeyText.uppercased().filter { $0.isLetter })
                         Button { showAddKey.toggle() } label: {
                             Text("add key").font(.system(size: 14, weight: .bold)).foregroundColor(.qAccent)
                         }
@@ -3569,16 +3597,29 @@ struct QuizActiveView: View {
                                 HStack {
                                     Text("answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
                                     Spacer()
+                                    Button {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(kCipherPrompt, forType: .string)
+                                        addKeyPromptCopied = true
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { addKeyPromptCopied = false }
+                                    } label: {
+                                        Text(addKeyPromptCopied ? "✓ copied" : "copy AI prompt")
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundColor(addKeyPromptCopied ? .qGreen : Color(red: 0.54, green: 0.67, blue: 0.86))
+                                    }
+                                    .buttonStyle(.plain)
+                                    let addKeyLetters = decodeCipher(addKeyText)
                                     Text("\(addKeyLetters.count)/\(model.targetCount)").font(.system(size: 11))
                                         .foregroundColor(addKeyLetters.count == model.targetCount ? .qGreen : .qSubtext)
                                 }
-                                TextEditor(text: $addKeyText)
+                                SecureField("paste coded key here", text: $addKeyText)
                                     .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
-                                    .scrollContentBackground(.hidden).background(Color.qSurface)
-                                    .frame(width: 200, height: 52)
+                                    .textFieldStyle(.plain).padding(8)
+                                    .frame(width: 200, height: 36)
+                                    .background(Color.qSurface)
                                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
                                     .onChange(of: addKeyText) { _, _ in
-                                        let letters = Array(addKeyText.uppercased().filter { $0.isLetter })
+                                        let letters = decodeCipher(addKeyText)
                                         if letters.count == model.targetCount {
                                             model.addKey(letters); showAddKey = false; addKeyText = ""
                                         }
@@ -4206,6 +4247,7 @@ struct QuizSummaryView: View {
     @State private var showResults = false
     @State private var showAddKey = false
     @State private var addKeyText = ""
+    @State private var addKeyPromptCopied2 = false
     private var missed: [QuizEntry] { model.results.filter { !$0.ok } }
     private var flaggedCount: Int { model.flags.count }
 
@@ -4329,7 +4371,7 @@ struct QuizSummaryView: View {
     }
 
     @ViewBuilder private var addKeySection: some View {
-        let addKeyLetters = Array(addKeyText.uppercased().filter { $0.isLetter })
+        let addKeyLetters = decodeCipher(addKeyText)
         Button { showAddKey.toggle() } label: {
             Text("add key")
                 .font(.system(size: 11, weight: .medium))
@@ -4344,16 +4386,28 @@ struct QuizSummaryView: View {
                 HStack {
                     Text("answer key").font(.system(size: 11)).foregroundColor(.qSubtext)
                     Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(kCipherPrompt, forType: .string)
+                        addKeyPromptCopied2 = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { addKeyPromptCopied2 = false }
+                    } label: {
+                        Text(addKeyPromptCopied2 ? "✓ copied" : "copy AI prompt")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(addKeyPromptCopied2 ? .qGreen : Color(red: 0.54, green: 0.67, blue: 0.86))
+                    }
+                    .buttonStyle(.plain)
                     Text("\(addKeyLetters.count)/\(model.targetCount)").font(.system(size: 11))
                         .foregroundColor(addKeyLetters.count == model.targetCount ? .qGreen : .qSubtext)
                 }
-                TextEditor(text: $addKeyText)
+                SecureField("paste coded key here", text: $addKeyText)
                     .font(.system(size: 12, design: .monospaced)).foregroundColor(.qText)
-                    .scrollContentBackground(.hidden).background(Color.qSurface)
-                    .frame(width: 200, height: 52)
+                    .textFieldStyle(.plain).padding(8)
+                    .frame(width: 200, height: 36)
+                    .background(Color.qSurface)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.qBorder, lineWidth: 1))
                     .onChange(of: addKeyText) { _, _ in
-                        let letters = Array(addKeyText.uppercased().filter { $0.isLetter })
+                        let letters = decodeCipher(addKeyText)
                         if letters.count == model.targetCount {
                             model.addKey(letters); showAddKey = false; addKeyText = ""
                             showResults = true; model.revealScore = true; model.revealFeedback = true
