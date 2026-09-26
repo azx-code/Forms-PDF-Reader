@@ -60,6 +60,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var allHosts: (() -> [PDFViewHost]) = { [] }
     var closeCurrentTabAction: (() -> Void)?
     @Published var updateBanner: String? = nil
+    @Published var userName: String? = UserDefaults.standard.string(forKey: "sb_name")
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let dirty = allHosts().filter { $0.hasUnsavedChanges || $0.hasUnsavedQuizData }
@@ -109,6 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         if isFirstTime {
             showNamePrompt { [weak self] name in
                 defaults.set(name, forKey: "sb_name")
+                self?.userName = name
                 self?.sbUpsert(deviceId: deviceId, name: name, isNew: true)
             }
         } else {
@@ -1834,15 +1836,28 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            if docs.isEmpty { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { openFile() } }
+            if docs.isEmpty && appDelegate.userName != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { openFile() }
+            }
             appDelegate.allHosts = { docs.map { $0.host } }
             appDelegate.closeCurrentTabAction = { closeCurrentTab() }
+        }
+        .onChange(of: appDelegate.userName) { _, name in
+            guard name != nil else { return }
+            if docs.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { openFile() }
+            }
         }
         .onChange(of: docs.count) { _, _ in
             appDelegate.allHosts = { docs.map { $0.host } }
             appDelegate.closeCurrentTabAction = { closeCurrentTab() }
         }
-        .navigationTitle(docs.isEmpty ? "Forms PDF Reader" : docs[activeIndex].title)
+        .navigationTitle({
+            if docs.isEmpty {
+                return appDelegate.userName.map { "Forms PDF Reader — \($0)" } ?? "Forms PDF Reader"
+            }
+            return docs[activeIndex].title
+        }())
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button("Open…") { openFile() }
