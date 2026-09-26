@@ -3120,12 +3120,18 @@ struct QuizModeSelectView: View {
     }
 }
 
-private let kAnswerCipher: [Character: Character] = [
-    "K":"A","R":"B","Z":"C","N":"D","W":"E",
-    "X":"F","P":"G","V":"H","T":"I","Q":"J",
-    "S":"K","U":"L","Y":"M"
-]
-private let kCipherPrompt = "Replace each answer letter with its code: A=K, B=R, C=Z, D=N, E=W, F=X, G=P, H=V, I=T, J=Q, K=S, L=U, M=Y. Output only the coded letters as one continuous string with no spaces."
+// ROT-10 decode: shift each letter back 10 positions (K→A, L→B, … W→M)
+private let kAnswerCipher: [Character: Character] = {
+    var map: [Character: Character] = [:]
+    let a = Int(("A" as UnicodeScalar).value)
+    for i in 0..<26 {
+        let encoded = Character(UnicodeScalar(a + (i + 10) % 26)!)
+        let decoded = Character(UnicodeScalar(a + i)!)
+        map[encoded] = decoded
+    }
+    return map
+}()
+private let kCipherPrompt = "Shift each answer letter forward by 10 positions in the alphabet (A→K, B→L, C→M, and so on). Output only the shifted letters as one continuous string with no spaces."
 
 private func decodeCipher(_ text: String) -> [Character] {
     Array(text.uppercased().filter { $0.isLetter }.map { kAnswerCipher[$0] ?? $0 })
