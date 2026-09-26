@@ -3204,8 +3204,8 @@ struct QuizSetupView: View {
                                     .font(.system(size: 11)).foregroundColor(.qSubtext).fixedSize(horizontal: false, vertical: true)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("1.  Click \"copy AI prompt\" below")
-                                    Text("2.  Paste the prompt along with your answer key PDF into Claude or ChatGPT")
-                                    Text("3.  Paste the coded result here — it'll look like random letters")
+                                    Text("2.  Open ChatGPT and upload your answer key PDF with the prompt")
+                                    Text("3.  Paste the result here — it'll look like random letters")
                                 }
                                 .font(.system(size: 11)).foregroundColor(.qSubtext)
                                 HStack {
