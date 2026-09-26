@@ -1924,15 +1924,33 @@ struct DocTabBar: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 0) {
                 ForEach(docs.indices, id: \.self) { i in
-                    Button { activeIndex = i } label: {
-                        Text(docs[i].title)
-                            .font(.system(size: 12))
-                            .lineLimit(1)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .frame(maxWidth: 200)
+                    HStack(spacing: 0) {
+                        Button { activeIndex = i } label: {
+                            Text(docs[i].title)
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .frame(maxWidth: 160)
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            let wasActive = i == activeIndex
+                            docs.remove(at: i)
+                            if wasActive {
+                                activeIndex = min(activeIndex, docs.count - 1)
+                            } else if i < activeIndex {
+                                activeIndex -= 1
+                            }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Color.secondary)
+                                .padding(4)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
                     .foregroundStyle(i == activeIndex ? Color.primary : Color.secondary)
                     .background(i == activeIndex ? Color.accentColor.opacity(0.12) : Color.clear)
                     .opacity(draggingIndex == i ? 0.4 : 1.0)
